@@ -100,7 +100,7 @@ class MainWindow(QMainWindow):
         self.selected_node = -1
         self.current_isl = np.array([], dtype=np.int32)
         
-        # === 状态变量 (含新增的 Handover/Jitter) ===
+        # === 状态变量 ===
         self.last_latencies = {}   # { "src->tgt": latency }
         self.last_paths = {}       # { "src->tgt": [id1, id2...] }
         self.handover_counts = {}  # { "src->tgt": 0 }
@@ -173,7 +173,7 @@ class MainWindow(QMainWindow):
         
         self.btn_load.clicked.connect(self.load_tle_file)
         
-        # 连接信号：使用 trigger_filter_update 而不是直接 reapply
+        # 连接信号
         self.chk_alt.toggled.connect(self.spin_alt.setEnabled)
         self.chk_alt.toggled.connect(self.trigger_filter_update)
         self.chk_inc.toggled.connect(self.spin_inc.setEnabled)
@@ -186,11 +186,11 @@ class MainWindow(QMainWindow):
         
         main_layout.addWidget(card_data)
         
-        # --- Card 2: Strategy ---
+        # --- Card 2: Strategy (Updated with Polar Cut) ---
         card_strat = DashboardCard("Topology", "🌐")
         
         self.combo_strat = QComboBox()
-        self.combo_strat.addItems(["Distance Only", "+ Grid", "Ultra Long Range"])
+        self.combo_strat.addItems(["Distance Only", "+ Grid (Mesh)", "Ultra Long Range"])
         card_strat.addWidget(self.combo_strat)
         
         self.param_widget = QWidget()
@@ -208,6 +208,16 @@ class MainWindow(QMainWindow):
             h.addWidget(widget)
             p_layout.addLayout(h)
             return widget
+        
+        # [新增] 极地熔断开关
+        self.chk_polar_cut = QCheckBox("Enable Polar Cut")
+        self.chk_polar_cut.setChecked(False) # 默认不开启
+        self.chk_polar_cut.setToolTip("断开高纬度地区的异轨链路（模拟极轨星座特性）")
+        p_layout.addWidget(self.chk_polar_cut)
+        
+        # [新增] 熔断纬度
+        self.spin_polar_lat = add_param_row("Cut Latitude:", QDoubleSpinBox())
+        self.spin_polar_lat.setRange(0, 90); self.spin_polar_lat.setValue(70.0); self.spin_polar_lat.setSuffix(" °")
 
         self.spin_plane_tol = add_param_row("Plane Tol:", QDoubleSpinBox())
         self.spin_plane_tol.setRange(0, 180); self.spin_plane_tol.setValue(0.0); self.spin_plane_tol.setSingleStep(0.5); self.spin_plane_tol.setSuffix(" °")
@@ -227,6 +237,12 @@ class MainWindow(QMainWindow):
         card_strat.addWidget(self.param_widget)
         
         self.combo_strat.currentIndexChanged.connect(self.update_strategy_params)
+        
+        # [新增信号]
+        self.chk_polar_cut.toggled.connect(self.update_strategy_params)
+        self.chk_polar_cut.toggled.connect(self.spin_polar_lat.setEnabled)
+        self.spin_polar_lat.valueChanged.connect(self.update_strategy_params)
+        
         self.spin_plane_tol.valueChanged.connect(self.update_strategy_params)
         self.spin_neighbor_tol.valueChanged.connect(self.update_strategy_params)
         self.spin_intra.valueChanged.connect(self.update_strategy_params)
@@ -354,20 +370,48 @@ class MainWindow(QMainWindow):
 
     def update_strategy_params(self):
         idx = self.combo_strat.currentIndex()
+        
         p_tol = self.spin_plane_tol.value()
         n_tol = self.spin_neighbor_tol.value()
         d_intra = self.spin_intra.value()
         d_inter = self.spin_inter.value()
         gsl_dist = self.spin_gsl.value()
-        if idx == 0:
+        
+        # [新增] 获取熔断参数
+        is_cut = self.chk_polar_cut.isChecked()
+        cut_lat = self.spin_polar_lat.value()
+        
+        # =========================================================
+        # [修复核心] 每次更新参数前，强制启用整个参数容器
+        # 避免从 Ultra Long 切换回来时，容器依然是被禁用的状态
+        # =========================================================
+        self.param_widget.setEnabled(True) 
+
+        if idx == 0: # Distance Only
             self.strategy = DistanceStrategy(max_isl_dist=d_intra if d_intra > 0 else 2000)
-            self.spin_plane_tol.setEnabled(False); self.spin_neighbor_tol.setEnabled(False); self.spin_inter.setEnabled(False); self.spin_gsl.setEnabled(True)
-        elif idx == 1:
-            self.strategy = StarlinkMeshStrategy(plane_tolerance=p_tol, max_intra_dist=d_intra, max_inter_dist=d_inter, neighbor_tolerance=n_tol, max_gsl_dist=gsl_dist)
-            self.spin_plane_tol.setEnabled(True); self.spin_neighbor_tol.setEnabled(True); self.spin_inter.setEnabled(True); self.spin_gsl.setEnabled(True)
-        elif idx == 2:
+            self.spin_plane_tol.setEnabled(False); self.spin_neighbor_tol.setEnabled(False); self.spin_inter.setEnabled(False)
+            self.chk_polar_cut.setEnabled(False); self.spin_polar_lat.setEnabled(False) 
+            self.spin_gsl.setEnabled(True)
+            
+        elif idx == 1: # + Grid
+            self.strategy = StarlinkMeshStrategy(
+                plane_tolerance=p_tol, 
+                max_intra_dist=d_intra, 
+                max_inter_dist=d_inter, 
+                neighbor_tolerance=n_tol, 
+                max_gsl_dist=gsl_dist,
+                enable_polar_cut=is_cut, 
+                polar_cut_lat=cut_lat    
+            )
+            self.spin_plane_tol.setEnabled(True); self.spin_neighbor_tol.setEnabled(True); self.spin_inter.setEnabled(True)
+            self.chk_polar_cut.setEnabled(True); self.spin_polar_lat.setEnabled(is_cut) # 启用
+            self.spin_gsl.setEnabled(True)
+            
+        elif idx == 2: # Ultra Long
             self.strategy = DistanceStrategy(max_isl_dist=5000)
+            # 在这里禁用，下一次循环会在上面被强制启用
             self.param_widget.setEnabled(False)
+
         if not self.is_playing and self.btn_run.isEnabled(): self.loop(advance_time=False)
 
     def start_export(self):
