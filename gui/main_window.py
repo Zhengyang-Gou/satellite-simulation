@@ -5,7 +5,8 @@ from PySide6.QtWidgets import (QMainWindow, QDockWidget, QPushButton, QVBoxLayou
                                QWidget, QLabel, QGroupBox, QSplitter, QFileDialog, 
                                QComboBox, QMessageBox, QCheckBox, QSpinBox, 
                                QHBoxLayout, QDoubleSpinBox, QProgressBar, QTextEdit, 
-                               QFrame, QScrollArea, QSizePolicy)
+                               QFrame, QScrollArea, QSizePolicy,
+                               QTabWidget, QGridLayout) # [新增导入 QTabWidget, QGridLayout]
 from PySide6.QtCore import QTimer, Qt, QSize
 from PySide6.QtGui import QColor, QPalette, QFont
 
@@ -14,7 +15,7 @@ from .visualizer import Visualizer
 from .charts import LinkStatsChart
 from core.calculator import OrbitCalculator
 from core.exporter import DataExporter
-from core.strategies import DistanceStrategy, StarlinkMeshStrategy
+from core.strategies import DistanceStrategy, StarlinkMeshStrategy, WalkerDeltaStrategy
 from core.router import PathFinder
 
 # === 1. Modern Dark Pro 样式表 ===
@@ -105,10 +106,10 @@ class MainWindow(QMainWindow):
         self.last_paths = {}       # { "src->tgt": [id1, id2...] }
         self.handover_counts = {}  # { "src->tgt": 0 }
         
-        # === 关键修复：防抖定时器 (解决卡死问题) ===
+        # === 防抖定时器 ===
         self.filter_debounce_timer = QTimer()
-        self.filter_debounce_timer.setSingleShot(True) # 只触发一次
-        self.filter_debounce_timer.setInterval(400)    # 延迟 400ms
+        self.filter_debounce_timer.setSingleShot(True) 
+        self.filter_debounce_timer.setInterval(400)    
         self.filter_debounce_timer.timeout.connect(self.reapply_filters)
 
         self.visualizer = Visualizer()
@@ -138,19 +139,28 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(10)
         
-        # --- Card 1: Data Source ---
+        # --- Card 1: Data Source (Updated with Tabs) ---
         card_data = DashboardCard("Data Source", "🛰️")
+        
+        self.tabs_data = QTabWidget()
+        self.tabs_data.setStyleSheet("QTabWidget::pane { border: 1px solid #333; border-radius: 4px; } QTabBar::tab { background: #2d2d2d; color: #aaa; padding: 6px 12px; border-top-left-radius: 4px; border-top-right-radius: 4px; } QTabBar::tab:selected { background: #3c3c3c; color: #fff; font-weight: bold; }")
+        
+        # ==========================================
+        # Tab 1: TLE File
+        # ==========================================
+        tab_tle = QWidget()
+        layout_tle = QVBoxLayout(tab_tle)
+        layout_tle.setContentsMargins(5, 10, 5, 5)
         
         h_load = QHBoxLayout()
         self.btn_load = QPushButton("Load TLE")
         self.btn_load.setCursor(Qt.PointingHandCursor)
-        self.lbl_file_status = QLabel("No TLE Loaded")
+        self.lbl_file_status = QLabel("No Data Loaded")
         self.lbl_file_status.setStyleSheet("color: #777777; font-style: italic;")
         h_load.addWidget(self.btn_load)
         h_load.addWidget(self.lbl_file_status)
-        card_data.addLayout(h_load)
+        layout_tle.addLayout(h_load)
         
-        from PySide6.QtWidgets import QGridLayout
         grid_filters = QGridLayout()
         grid_filters.setSpacing(8)
 
@@ -168,29 +178,57 @@ class MainWindow(QMainWindow):
         grid_filters.addWidget(self.chk_inc, 1, 0)
         grid_filters.addWidget(self.spin_inc, 1, 1)
         grid_filters.addWidget(self.spin_tol_inc, 1, 2)
-
-        card_data.addLayout(grid_filters)
+        layout_tle.addLayout(grid_filters)
         
         self.btn_load.clicked.connect(self.load_tle_file)
-        
-        # 连接信号
         self.chk_alt.toggled.connect(self.spin_alt.setEnabled)
         self.chk_alt.toggled.connect(self.trigger_filter_update)
         self.chk_inc.toggled.connect(self.spin_inc.setEnabled)
         self.chk_inc.toggled.connect(self.trigger_filter_update)
-        
         self.spin_alt.valueChanged.connect(self.trigger_filter_update)
         self.spin_inc.valueChanged.connect(self.trigger_filter_update)
         self.spin_tol_alt.valueChanged.connect(self.trigger_filter_update)
         self.spin_tol_inc.valueChanged.connect(self.trigger_filter_update)
+
+        # ==========================================
+        # Tab 2: Walker Constellation 
+        # ==========================================
+        tab_walker = QWidget()
+        layout_walker = QVBoxLayout(tab_walker)
+        layout_walker.setContentsMargins(5, 10, 5, 5)
+        
+        grid_walker = QGridLayout()
+        self.spin_w_t = QSpinBox(); self.spin_w_t.setRange(1, 10000); self.spin_w_t.setValue(1584)
+        self.spin_w_p = QSpinBox(); self.spin_w_p.setRange(1, 1000); self.spin_w_p.setValue(72)
+        self.spin_w_f = QSpinBox(); self.spin_w_f.setRange(0, 1000); self.spin_w_f.setValue(39)
+        self.spin_w_alt = QDoubleSpinBox(); self.spin_w_alt.setRange(100, 10000); self.spin_w_alt.setValue(550.0); self.spin_w_alt.setSuffix(" km")
+        self.spin_w_inc = QDoubleSpinBox(); self.spin_w_inc.setRange(0, 180); self.spin_w_inc.setValue(53.0); self.spin_w_inc.setSuffix(" °")
+
+        grid_walker.addWidget(QLabel("Total Sats (T):"), 0, 0); grid_walker.addWidget(self.spin_w_t, 0, 1)
+        grid_walker.addWidget(QLabel("Planes (P):"), 1, 0); grid_walker.addWidget(self.spin_w_p, 1, 1)
+        grid_walker.addWidget(QLabel("Phase Factor (F):"), 2, 0); grid_walker.addWidget(self.spin_w_f, 2, 1)
+        grid_walker.addWidget(QLabel("Altitude:"), 3, 0); grid_walker.addWidget(self.spin_w_alt, 3, 1)
+        grid_walker.addWidget(QLabel("Inclination:"), 4, 0); grid_walker.addWidget(self.spin_w_inc, 4, 1)
+        
+        layout_walker.addLayout(grid_walker)
+        
+        self.btn_generate = QPushButton("Generate Constellation")
+        self.btn_generate.setObjectName("PrimaryBtn")
+        self.btn_generate.setCursor(Qt.PointingHandCursor)
+        self.btn_generate.clicked.connect(self.generate_walker)
+        layout_walker.addWidget(self.btn_generate)
+
+        self.tabs_data.addTab(tab_tle, "TLE File")
+        self.tabs_data.addTab(tab_walker, "Walker Generation")
+        card_data.addWidget(self.tabs_data)
         
         main_layout.addWidget(card_data)
         
-        # --- Card 2: Strategy (Updated with Polar Cut) ---
+        # --- Card 2: Strategy ---
         card_strat = DashboardCard("Topology", "🌐")
         
         self.combo_strat = QComboBox()
-        self.combo_strat.addItems(["Distance Only", "+ Grid (Mesh)", "Ultra Long Range"])
+        self.combo_strat.addItems(["Distance Only", "+ Grid (Star)", "Ultra Long Range", "+ Grid (Delta)"])
         card_strat.addWidget(self.combo_strat)
         
         self.param_widget = QWidget()
@@ -209,13 +247,11 @@ class MainWindow(QMainWindow):
             p_layout.addLayout(h)
             return widget
         
-        # [新增] 极地熔断开关
         self.chk_polar_cut = QCheckBox("Enable Polar Cut")
-        self.chk_polar_cut.setChecked(False) # 默认不开启
+        self.chk_polar_cut.setChecked(False) 
         self.chk_polar_cut.setToolTip("断开高纬度地区的异轨链路（模拟极轨星座特性）")
         p_layout.addWidget(self.chk_polar_cut)
         
-        # [新增] 熔断纬度
         self.spin_polar_lat = add_param_row("Cut Latitude:", QDoubleSpinBox())
         self.spin_polar_lat.setRange(0, 90); self.spin_polar_lat.setValue(70.0); self.spin_polar_lat.setSuffix(" °")
 
@@ -237,12 +273,9 @@ class MainWindow(QMainWindow):
         card_strat.addWidget(self.param_widget)
         
         self.combo_strat.currentIndexChanged.connect(self.update_strategy_params)
-        
-        # [新增信号]
         self.chk_polar_cut.toggled.connect(self.update_strategy_params)
         self.chk_polar_cut.toggled.connect(self.spin_polar_lat.setEnabled)
         self.spin_polar_lat.valueChanged.connect(self.update_strategy_params)
-        
         self.spin_plane_tol.valueChanged.connect(self.update_strategy_params)
         self.spin_neighbor_tol.valueChanged.connect(self.update_strategy_params)
         self.spin_intra.valueChanged.connect(self.update_strategy_params)
@@ -251,9 +284,8 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(card_strat)
 
-        # --- Card 3: Monitor (Updated) ---
+        # --- Card 3: Monitor ---
         card_mon = DashboardCard("Monitor", "📊")
-        
         self.combo_monitor = QComboBox()
         self.combo_monitor.addItems([
             "Global: Link Counts", 
@@ -263,7 +295,6 @@ class MainWindow(QMainWindow):
             "Path: Handover Count"
         ])
         card_mon.addWidget(self.combo_monitor)
-        
         self.combo_monitor.currentIndexChanged.connect(self.on_chart_mode_changed)
         main_layout.addWidget(card_mon)
 
@@ -309,7 +340,7 @@ class MainWindow(QMainWindow):
         self.txt_info = QTextEdit()
         self.txt_info.setReadOnly(True)
         self.txt_info.setMaximumHeight(150)
-        self.txt_info.setPlaceholderText(">>> System Ready.\n>>> Waiting for TLE data...")
+        self.txt_info.setPlaceholderText(">>> System Ready.\n>>> Waiting for data...")
         main_layout.addWidget(self.txt_info)
         
         main_layout.addStretch() 
@@ -333,6 +364,9 @@ class MainWindow(QMainWindow):
         
         self.update_strategy_params()
 
+    # ==========================================
+    # 数据加载与生成逻辑
+    # ==========================================
     def load_tle_file(self):
         fname, _ = QFileDialog.getOpenFileName(self, "Open TLE", "", "Files (*.txt *.tle)")
         if fname:
@@ -343,7 +377,6 @@ class MainWindow(QMainWindow):
             except Exception as e: QMessageBox.critical(self, "Error", str(e))
 
     def trigger_filter_update(self):
-        """ 防抖函数：重置计时器，避免频繁计算 """
         self.filter_debounce_timer.start()
 
     def reapply_filters(self):
@@ -354,7 +387,6 @@ class MainWindow(QMainWindow):
             t_alt = self.spin_tol_alt.value()
             t_inc = self.spin_tol_inc.value()
             
-            # 耗时操作，现在只有在用户停止输入 400ms 后才会执行
             count = self.calculator.load_tle_data(self.current_tle_content, filter_alt=f_alt, alt_tol=t_alt, filter_inc=f_inc, inc_tol=t_inc)
             
             self.lbl_file_status.setText(f"Active: {count} Sats")
@@ -368,6 +400,50 @@ class MainWindow(QMainWindow):
                 self.visualizer.update_scene(np.empty((0,3)), np.empty((0,3)), np.array([]), np.array([]))
         except Exception as e: print(f"Filter update error: {e}")
 
+    def generate_walker(self):
+        t = self.spin_w_t.value()
+        p = self.spin_w_p.value()
+        f = self.spin_w_f.value()
+        alt = self.spin_w_alt.value()
+        inc = self.spin_w_inc.value()
+
+        if t % p != 0:
+            QMessageBox.warning(self, "Invalid Parameters", "Total satellites (T) must be exactly divisible by planes (P).")
+            return
+        if f >= p:
+            QMessageBox.warning(self, "Invalid Parameters", "Phase factor (F) must be strictly less than the number of planes (P).")
+            return
+
+        try:
+            if self.timer.isActive(): 
+                self.toggle_sim()
+            
+            self.current_tle_content = None 
+
+            count = self.calculator.generate_walker(t, p, f, alt, inc, self.current_time)
+            
+            self.lbl_file_status.setText(f"Walker: {count} Sats")
+            self.lbl_file_status.setStyleSheet("color: #4caf50; font-weight: bold;") 
+            
+            has_sats = count > 0
+            self.btn_run.setEnabled(has_sats)
+            self.btn_export.setEnabled(has_sats)
+            
+            if has_sats:
+                self.update_strategy_params()
+                if not self.is_playing: 
+                    self.loop(advance_time=False) 
+            else:
+                self.visualizer.update_scene(np.empty((0,3)), np.empty((0,3)), np.array([]), np.array([]))
+                
+            self.txt_info.setText(f">>> Generated Walker Constellation ({t}/{p}/{f})\n>>> System Ready.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Generation Error", str(e))
+
+    # ==========================================
+    # 策略与控制逻辑
+    # ==========================================
     def update_strategy_params(self):
         idx = self.combo_strat.currentIndex()
         
@@ -377,14 +453,9 @@ class MainWindow(QMainWindow):
         d_inter = self.spin_inter.value()
         gsl_dist = self.spin_gsl.value()
         
-        # [新增] 获取熔断参数
         is_cut = self.chk_polar_cut.isChecked()
         cut_lat = self.spin_polar_lat.value()
         
-        # =========================================================
-        # [修复核心] 每次更新参数前，强制启用整个参数容器
-        # 避免从 Ultra Long 切换回来时，容器依然是被禁用的状态
-        # =========================================================
         self.param_widget.setEnabled(True) 
 
         if idx == 0: # Distance Only
@@ -404,13 +475,31 @@ class MainWindow(QMainWindow):
                 polar_cut_lat=cut_lat    
             )
             self.spin_plane_tol.setEnabled(True); self.spin_neighbor_tol.setEnabled(True); self.spin_inter.setEnabled(True)
-            self.chk_polar_cut.setEnabled(True); self.spin_polar_lat.setEnabled(is_cut) # 启用
+            self.chk_polar_cut.setEnabled(True); self.spin_polar_lat.setEnabled(is_cut) 
             self.spin_gsl.setEnabled(True)
             
         elif idx == 2: # Ultra Long
             self.strategy = DistanceStrategy(max_isl_dist=5000)
-            # 在这里禁用，下一次循环会在上面被强制启用
             self.param_widget.setEnabled(False)
+
+        elif idx == 3: # + Grid (Delta)
+            # 如果没有勾选 Enable Polar Cut，就把阈值设为 90 度，相当于永不断开
+            active_cut_lat = cut_lat if is_cut else 90.0
+            
+            self.strategy = WalkerDeltaStrategy(
+                turnaround_lat=active_cut_lat, 
+                max_gsl_dist=gsl_dist
+            )
+            # 纯数学映射，不需要这些容差和距离参数
+            self.spin_plane_tol.setEnabled(False)
+            self.spin_neighbor_tol.setEnabled(False)
+            self.spin_intra.setEnabled(False)
+            self.spin_inter.setEnabled(False)
+            
+            # 启用掉头熔断相关控制
+            self.chk_polar_cut.setEnabled(True)
+            self.spin_polar_lat.setEnabled(is_cut)
+            self.spin_gsl.setEnabled(True)
 
         if not self.is_playing and self.btn_run.isEnabled(): self.loop(advance_time=False)
 
@@ -435,7 +524,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Finished", "Export done.")
 
     def input_widgets_enabled(self, val):
-        self.param_widget.setEnabled(val); self.btn_load.setEnabled(val)
+        self.param_widget.setEnabled(val); self.btn_load.setEnabled(val); self.btn_generate.setEnabled(val)
 
     def toggle_sim(self):
         if self.is_playing: 
@@ -471,7 +560,6 @@ class MainWindow(QMainWindow):
 
     def on_routes_updated(self, paths):
         self.active_paths = paths
-        # 重置历史状态
         self.last_latencies = {}
         self.last_paths = {}
         self.handover_counts = {}
@@ -506,7 +594,6 @@ class MainWindow(QMainWindow):
         isl, gsl = self.strategy.compute_links(self.calculator.satellites, self.gs_coords)
         self.current_isl = isl
         
-        # === 核心逻辑修改：根据下拉菜单计算指标 ===
         chart_data = {}
         highlight_segments = []
         current_mode = self.combo_monitor.currentText()
@@ -521,12 +608,10 @@ class MainWindow(QMainWindow):
                 latency, path = self.path_finder.find_shortest_path(src, tgt)
                 
                 if latency is not None:
-                    # 1. 可视化路径高亮
                     if len(path) > 1:
                         for i in range(len(path)-1):
                             highlight_segments.extend([2, path[i], path[i+1]])
 
-                    # 2. 数据计算分支
                     val_to_plot = 0
                     
                     if "Latency" in current_mode:
@@ -541,18 +626,16 @@ class MainWindow(QMainWindow):
                     elif "Jitter" in current_mode:
                         last_val = self.last_latencies.get(label, latency)
                         jitter = abs(latency - last_val)
-                        self.last_latencies[label] = latency # 更新历史
+                        self.last_latencies[label] = latency 
                         val_to_plot = jitter
                         info_msg += f" √ {label}: Jitter {jitter:.2f}ms\n"
 
                     elif "Handover" in current_mode:
                         prev_path = self.last_paths.get(label, None)
-                        # 检测变化: 如果之前有路径且不同，则计数
                         if prev_path is not None and path != prev_path:
                             self.handover_counts[label] = self.handover_counts.get(label, 0) + 1
                         
-                        self.last_paths[label] = path # 更新
-                        
+                        self.last_paths[label] = path 
                         count = self.handover_counts.get(label, 0)
                         val_to_plot = count
                         info_msg += f" √ {label}: Switches {count}\n"
@@ -563,7 +646,6 @@ class MainWindow(QMainWindow):
                     chart_data[label] = val_to_plot
                     
                 else:
-                    # 如果断连，保持计数不变
                     if "Handover" in current_mode:
                         chart_data[label] = self.handover_counts.get(label, 0)
                     else:
@@ -586,7 +668,6 @@ class MainWindow(QMainWindow):
             if "Link Counts" in current_mode:
                 self.txt_info.setText(f"TIME: {self.current_time.strftime('%H:%M:%S')}\nNETWORK STATUS:\n • ISL Links: {len(isl)//3}\n • GSL Links: {len(gsl)//3}")
 
-        # 如果是全局模式，强制覆盖 chart_data
         if "Link Counts" in current_mode:
             chart_data = {"ISL Count": len(isl)//3, "GSL Count": len(gsl)//3}
         
