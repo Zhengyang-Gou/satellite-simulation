@@ -9,6 +9,8 @@ class Satellite:
     line2: str
     # 运行时属性
     position: np.ndarray = np.array([0.0, 0.0, 0.0])
+    position_eci: np.ndarray = np.array([0.0, 0.0, 0.0]) # [新增] ECI 坐标
+    
     # 轨道参数 (用于拓扑分组)
     inclination: float = 0.0  # 倾角
     raan: float = 0.0         # 升交点赤经 (区分轨道面)
@@ -16,6 +18,11 @@ class Satellite:
     altitude: float = 0.0     # 轨道高度 (区分Shell)
     arg_perigee: float = 0.0  # 近地点幅角
     
+    # === [新增] Walker 星座专属属性 ===
+    is_walker: bool = False   # 标记是否为纯数学生成的 Walker 卫星
+    plane_idx: int = -1       # P: 所在轨道面编号
+    node_idx: int = -1        # S: 轨道面内的卫星编号
+
 # GroundStation 类
 @dataclass
 class GroundStation:
