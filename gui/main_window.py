@@ -1,684 +1,258 @@
 import os
 import numpy as np
 from datetime import datetime, timedelta
-from PySide6.QtWidgets import (QMainWindow, QDockWidget, QPushButton, QVBoxLayout, 
-                               QWidget, QLabel, QGroupBox, QSplitter, QFileDialog, 
-                               QComboBox, QMessageBox, QCheckBox, QSpinBox, 
-                               QHBoxLayout, QDoubleSpinBox, QProgressBar, QTextEdit, 
-                               QFrame, QScrollArea, QSizePolicy,
-                               QTabWidget, QGridLayout) # [新增导入 QTabWidget, QGridLayout]
-from PySide6.QtCore import QTimer, Qt, QSize
-from PySide6.QtGui import QColor, QPalette, QFont
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                               QSplitter, QTableWidget, QTableWidgetItem, 
+                               QHeaderView, QLineEdit, QLabel, QPushButton, 
+                               QFileDialog, QMessageBox, QDialog, QFormLayout, 
+                               QSpinBox, QDoubleSpinBox, QComboBox, QCheckBox, 
+                               QStyledItemDelegate, QStyle, QDialogButtonBox,
+                               QInputDialog)
+from PySide6.QtCore import QTimer, Qt, QRect
+from PySide6.QtGui import QColor, QPainter, QAction
 
-# 假设后端模块保持不变
 from .visualizer import Visualizer
-from .charts import LinkStatsChart
 from core.calculator import OrbitCalculator
 from core.exporter import DataExporter
 from core.strategies import DistanceStrategy, StarlinkMeshStrategy, WalkerDeltaStrategy
-from core.router import PathFinder
 
-# === 1. Modern Dark Pro 样式表 ===
-DARK_THEME_STYLESHEET = """
-QMainWindow, QWidget { background-color: #1e1e1e; color: #cccccc; font-family: "Segoe UI", "Roboto", sans-serif; font-size: 13px; }
-QScrollArea { border: none; background-color: #1e1e1e; }
-QDockWidget { titlebar-close-icon: url(none); titlebar-normal-icon: url(none); border: 1px solid #333333; }
-QDockWidget::title { background: #252526; text-align: left; padding-left: 10px; padding-top: 6px; padding-bottom: 6px; font-weight: bold; color: #e0e0e0; }
-QSplitter::handle { background-color: #333333; }
-QSplitter::handle:hover { background-color: #007acc; }
-QFrame#Card { background-color: #252526; border: 1px solid #333333; border-radius: 6px; margin-bottom: 8px; }
-QLabel#CardTitle { font-size: 13px; font-weight: bold; color: #569cd6; padding-bottom: 4px; border-bottom: 1px solid #3e3e42; margin-bottom: 8px; }
-QPushButton { background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; color: #ffffff; padding: 6px 12px; }
-QPushButton:hover { background-color: #4c4c4c; border-color: #555555; }
-QPushButton:pressed { background-color: #2a2d2e; }
-QPushButton:disabled { background-color: #2d2d2d; color: #666666; border: 1px solid #2d2d2d; }
-QPushButton#PrimaryBtn { background-color: #388e3c; border: 1px solid #388e3c; }
-QPushButton#PrimaryBtn:hover { background-color: #4caf50; }
-QPushButton#PrimaryBtn:pressed { background-color: #2e7d32; }
-QPushButton#DangerBtn { background-color: #d32f2f; border: 1px solid #d32f2f; }
-QPushButton#DangerBtn:hover { background-color: #f44336; }
-QSpinBox, QDoubleSpinBox, QComboBox { background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 3px; color: #f0f0f0; padding: 4px; selection-background-color: #264f78; }
-QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid #007acc; }
-QComboBox::drop-down { border: none; width: 20px; }
-QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { background-color: transparent; border: none; width: 16px; }
-QCheckBox { spacing: 8px; color: #cccccc; }
-QCheckBox::indicator { width: 16px; height: 16px; background-color: #3c3c3c; border: 1px solid #555555; border-radius: 3px; }
-QCheckBox::indicator:checked { background-color: #007acc; border: 1px solid #007acc; }
-QTextEdit { background-color: #1e1e1e; border: 1px solid #333333; border-radius: 4px; color: #9cdcfe; font-family: "Consolas", monospace; font-size: 12px; }
-QProgressBar { background-color: #2d2d2d; border: none; border-radius: 3px; height: 6px; text-align: center; }
-QProgressBar::chunk { background-color: #007acc; border-radius: 3px; }
-QScrollBar:vertical { border: none; background: #1e1e1e; width: 10px; margin: 0px; }
-QScrollBar::handle:vertical { background: #424242; min-height: 20px; border-radius: 5px; }
-QScrollBar::handle:vertical:hover { background: #686868; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+DARK_THEME = """
+QMainWindow, QWidget, QDialog { background-color: #1e1e1e; color: #cccccc; font-family: "Segoe UI", sans-serif; font-size: 13px; }
+QTableWidget { background-color: #252526; border: 1px solid #333333; gridline-color: #3e3e42; }
+QHeaderView::section { background-color: #2d2d2d; border: 1px solid #3e3e42; padding: 4px; font-weight: bold;}
+QTableWidget::item:selected { background-color: #094771; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #3c3c3c; border: 1px solid #555; padding: 3px; color: #fff; border-radius: 3px;}
+QPushButton { background-color: #3c3c3c; border: 1px solid #555; padding: 5px 15px; color: #fff; border-radius: 3px;}
+QPushButton:hover { background-color: #4c4c4c; }
 """
 
-# === 2. 辅助类：仪表盘卡片 ===
-class DashboardCard(QFrame):
-    def __init__(self, title, icon_emoji="", parent=None):
+class LatencyDelegate(QStyledItemDelegate):
+    def __init__(self, max_latency=25.0, parent=None):
         super().__init__(parent)
-        self.setObjectName("Card")
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(12, 12, 12, 12)
-        self.main_layout.setSpacing(10)
-        
-        full_title = f"{icon_emoji}  {title}" if icon_emoji else title
-        self.lbl_title = QLabel(full_title)
-        self.lbl_title.setObjectName("CardTitle")
-        self.main_layout.addWidget(self.lbl_title)
-        
-        self.content_widget = QWidget()
-        self.content_widget.setStyleSheet("background-color: transparent;") 
-        self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_layout.setSpacing(8)
-        self.main_layout.addWidget(self.content_widget)
+        self.max_latency = max_latency
+    def paint(self, painter, option, index):
+        try: latency = float(index.data(Qt.EditRole))
+        except: return super().paint(painter, option, index)
+        ratio = min(max(latency / self.max_latency, 0.0), 1.0)
+        color = QColor(int(255 * ratio), int(255 * (1.0 - ratio)), 50)
+        painter.save()
+        if option.state & QStyle.State_Selected: painter.fillRect(option.rect, QColor("#094771"))
+        else: painter.fillRect(option.rect, QColor("#252526"))
+        bar_rect = QRect(option.rect.x() + 4, option.rect.y() + 4, int((option.rect.width() - 8) * ratio), option.rect.height() - 8)
+        painter.fillRect(bar_rect, color)
+        painter.setPen(QColor("#ffffff")); painter.drawText(option.rect, Qt.AlignCenter, f"{latency:.4f} ms")
+        painter.restore()
 
-    def addLayout(self, layout):
-        self.content_layout.addLayout(layout)
-    
-    def addWidget(self, widget):
-        self.content_layout.addWidget(widget)
+class WalkerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Generate Walker Constellation"); layout = QFormLayout(self)
+        self.spin_t = QSpinBox(); self.spin_t.setRange(1, 10000); self.spin_t.setValue(1584)
+        self.spin_p = QSpinBox(); self.spin_p.setRange(1, 1000); self.spin_p.setValue(72)
+        self.spin_f = QSpinBox(); self.spin_f.setRange(0, 1000); self.spin_f.setValue(39)
+        self.spin_alt = QDoubleSpinBox(); self.spin_alt.setRange(100, 20000); self.spin_alt.setValue(550.0); self.spin_alt.setSuffix(" km")
+        self.spin_inc = QDoubleSpinBox(); self.spin_inc.setRange(0, 180); self.spin_inc.setValue(53.0); self.spin_inc.setSuffix(" °")
+        layout.addRow("Total Satellites (T):", self.spin_t); layout.addRow("Orbital Planes (P):", self.spin_p); layout.addRow("Phase Factor (F):", self.spin_f)
+        layout.addRow("Altitude:", self.spin_alt); layout.addRow("Inclination:", self.spin_inc)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        layout.addRow(btns)
 
-# === 3. 主窗口 ===
+class TopologyDialog(QDialog):
+    def __init__(self, current_strategy_idx, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Network Topology Settings"); self.setMinimumWidth(350); layout = QVBoxLayout(self)
+        self.combo_strat = QComboBox(); self.combo_strat.addItems(["Distance Only", "Starlink Mesh (Grid)", "Ultra Long Range", "Walker Delta O(1)"])
+        self.combo_strat.setCurrentIndex(current_strategy_idx); layout.addWidget(QLabel("Connection Strategy:")); layout.addWidget(self.combo_strat)
+        self.panel_dist = QWidget(); l_dist = QFormLayout(self.panel_dist)
+        self.spin_dist = QSpinBox(); self.spin_dist.setRange(0, 20000); self.spin_dist.setValue(2000); self.spin_dist.setSuffix(" km"); l_dist.addRow("Max ISL Distance:", self.spin_dist)
+        self.panel_mesh = QWidget(); l_mesh = QFormLayout(self.panel_mesh)
+        self.spin_plane_tol = QDoubleSpinBox(); self.spin_plane_tol.setValue(6.0); self.spin_plane_tol.setSuffix(" °")
+        self.spin_intra = QSpinBox(); self.spin_intra.setRange(0, 10000); self.spin_intra.setValue(5000); self.spin_intra.setSuffix(" km")
+        self.spin_inter = QSpinBox(); self.spin_inter.setRange(0, 10000); self.spin_inter.setValue(5000); self.spin_inter.setSuffix(" km")
+        self.chk_polar = QCheckBox("Enable Polar Cut (极地熔断)"); self.chk_polar.setChecked(True)
+        self.spin_polar_lat = QDoubleSpinBox(); self.spin_polar_lat.setRange(0, 90); self.spin_polar_lat.setValue(70.0); self.spin_polar_lat.setSuffix(" °")
+        l_mesh.addRow("Plane Tolerance:", self.spin_plane_tol); l_mesh.addRow("Max Intra-plane Dist:", self.spin_intra); l_mesh.addRow("Max Inter-plane Dist:", self.spin_inter)
+        l_mesh.addRow(self.chk_polar); l_mesh.addRow("Cutoff Latitude:", self.spin_polar_lat)
+        self.panel_delta = QWidget(); l_delta = QFormLayout(self.panel_delta)
+        self.spin_delta_lat = QDoubleSpinBox(); self.spin_delta_lat.setRange(0, 90); self.spin_delta_lat.setValue(70.0); self.spin_delta_lat.setSuffix(" °"); l_delta.addRow("Turnaround Latitude:", self.spin_delta_lat)
+        layout.addWidget(self.panel_dist); layout.addWidget(self.panel_mesh); layout.addWidget(self.panel_delta)
+        self.combo_strat.currentIndexChanged.connect(self.update_panels); self.update_panels(current_strategy_idx)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); btns.accepted.connect(self.accept); btns.rejected.connect(self.reject); layout.addWidget(btns)
+
+    def update_panels(self, idx):
+        self.panel_dist.setVisible(idx == 0); self.panel_mesh.setVisible(idx == 1); self.panel_delta.setVisible(idx == 3)
+
+class ExportDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export Data Settings"); layout = QFormLayout(self)
+        self.btn_path = QPushButton("Select Directory..."); self.lbl_path = QLabel("Not Selected"); self.path = ""
+        self.btn_path.clicked.connect(lambda: [setattr(self, 'path', d), self.lbl_path.setText(os.path.basename(d))] if (d := QFileDialog.getExistingDirectory(self)) else None)
+        self.spin_duration = QSpinBox(); self.spin_duration.setRange(10, 36000); self.spin_duration.setValue(60); self.spin_duration.setSuffix(" s")
+        layout.addRow("Save To:", self.btn_path); layout.addRow("", self.lbl_path); layout.addRow("Export Duration:", self.spin_duration)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); btns.accepted.connect(self.accept); btns.rejected.connect(self.reject); layout.addRow(btns)
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Satellite Network Simulation Pro") 
-        self.resize(1400, 950)
-        self.setStyleSheet(DARK_THEME_STYLESHEET)
+        self.setWindowTitle("Satellite Network Simulation Pro"); self.resize(1200, 900); self.setStyleSheet(DARK_THEME)
+        self.calculator = OrbitCalculator(); self.exporter = DataExporter()
+        self.strategy = DistanceStrategy(max_isl_dist=2000); self.strategy_idx = 0
+        self.step_size = 1.0; self.is_playing = False; self.current_time = datetime.utcnow()
+        self.all_links_data = []
+        
+        # [核心修改] 将单选变量改为多选集合 Set
+        self.selected_link_pairs = set() 
+        
+        self._init_ui(); self._init_menu()
+        self.timer = QTimer(); self.timer.timeout.connect(self.loop)
 
-        self.calculator = OrbitCalculator()
-        self.exporter = DataExporter()
-        self.path_finder = PathFinder() 
-        
-        self.current_tle_content = None 
-        self.is_playing = False
-        self.strategy = DistanceStrategy(max_isl_dist=0)
-        self.current_time = datetime.utcnow()
-        self.gs_coords = np.empty((0, 3)) 
-        self.active_paths = []
-        self.selected_node = -1
-        self.current_isl = np.array([], dtype=np.int32)
-        
-        # === 状态变量 ===
-        self.last_latencies = {}   # { "src->tgt": latency }
-        self.last_paths = {}       # { "src->tgt": [id1, id2...] }
-        self.handover_counts = {}  # { "src->tgt": 0 }
-        
-        # === 防抖定时器 ===
-        self.filter_debounce_timer = QTimer()
-        self.filter_debounce_timer.setSingleShot(True) 
-        self.filter_debounce_timer.setInterval(400)    
-        self.filter_debounce_timer.timeout.connect(self.reapply_filters)
-
+    def _init_ui(self):
+        central = QWidget(); self.setCentralWidget(central); layout = QVBoxLayout(central); layout.setContentsMargins(0,0,0,0)
+        splitter = QSplitter(Qt.Vertical)
         self.visualizer = Visualizer()
-        self.visualizer.satellite_picked.connect(self.on_sat_picked)
-        self.visualizer.routes_updated.connect(self.on_routes_updated)
+        splitter.addWidget(self.visualizer)
         
-        self.setCentralWidget(self.visualizer)
-        self._init_control_panel()
-        
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.loop)
+        bottom = QWidget(); b_layout = QVBoxLayout(bottom)
+        tool_layout = QHBoxLayout()
+        self.txt_search = QLineEdit(); self.txt_search.setPlaceholderText("Filter Name (e.g. '1203' or '1203-1204')..."); self.txt_search.setFixedWidth(250)
+        self.txt_search.textChanged.connect(self.refresh_table_view)
+        self.lbl_stats = QLabel("Active Links: 0")
+        tool_layout.addWidget(self.txt_search); tool_layout.addStretch(); tool_layout.addWidget(self.lbl_stats); b_layout.addLayout(tool_layout)
 
-    def _init_control_panel(self):
-        dock = QDockWidget("Mission Control", self)
-        dock.setFeatures(QDockWidget.NoDockWidgetFeatures) 
-        dock.setAllowedAreas(Qt.LeftDockWidgetArea)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Link ID", "Source", "Target", "Latency (ms)"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setItemDelegateForColumn(3, LatencyDelegate(25.0)); self.table.setSortingEnabled(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        # [核心修改] 开启 ExtendedSelection 支持 Ctrl 多选
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection) 
+        self.table.itemSelectionChanged.connect(self.on_table_selection)
+        b_layout.addWidget(self.table)
         
-        control_container = QWidget()
-        scroll.setWidget(control_container)
-        
-        main_layout = QVBoxLayout(control_container)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        main_layout.setSpacing(10)
-        
-        # --- Card 1: Data Source (Updated with Tabs) ---
-        card_data = DashboardCard("Data Source", "🛰️")
-        
-        self.tabs_data = QTabWidget()
-        self.tabs_data.setStyleSheet("QTabWidget::pane { border: 1px solid #333; border-radius: 4px; } QTabBar::tab { background: #2d2d2d; color: #aaa; padding: 6px 12px; border-top-left-radius: 4px; border-top-right-radius: 4px; } QTabBar::tab:selected { background: #3c3c3c; color: #fff; font-weight: bold; }")
-        
-        # ==========================================
-        # Tab 1: TLE File
-        # ==========================================
-        tab_tle = QWidget()
-        layout_tle = QVBoxLayout(tab_tle)
-        layout_tle.setContentsMargins(5, 10, 5, 5)
-        
-        h_load = QHBoxLayout()
-        self.btn_load = QPushButton("Load TLE")
-        self.btn_load.setCursor(Qt.PointingHandCursor)
-        self.lbl_file_status = QLabel("No Data Loaded")
-        self.lbl_file_status.setStyleSheet("color: #777777; font-style: italic;")
-        h_load.addWidget(self.btn_load)
-        h_load.addWidget(self.lbl_file_status)
-        layout_tle.addLayout(h_load)
-        
-        grid_filters = QGridLayout()
-        grid_filters.setSpacing(8)
+        self.page_size = 15; self.current_page = 1
+        page_layout = QHBoxLayout()
+        self.btn_prev = QPushButton("◄ Prev"); self.btn_prev.clicked.connect(lambda: self.change_page(-1))
+        self.lbl_page = QLabel("Page 1/1")
+        self.btn_next = QPushButton("Next ►"); self.btn_next.clicked.connect(lambda: self.change_page(1))
+        page_layout.addStretch(); page_layout.addWidget(self.btn_prev); page_layout.addWidget(self.lbl_page); page_layout.addWidget(self.btn_next); page_layout.addStretch()
+        b_layout.addLayout(page_layout)
+        splitter.addWidget(bottom); splitter.setStretchFactor(0, 6); splitter.setStretchFactor(1, 4)
+        layout.addWidget(splitter)
 
-        self.chk_alt = QCheckBox("Alt Filter"); self.chk_alt.setChecked(True)
-        self.spin_alt = QSpinBox(); self.spin_alt.setRange(0, 50000); self.spin_alt.setValue(0); self.spin_alt.setSuffix(" km")
-        self.spin_tol_alt = QSpinBox(); self.spin_tol_alt.setRange(0, 5000); self.spin_tol_alt.setValue(0); self.spin_tol_alt.setPrefix("± ")
+    def _init_menu(self):
+        mb = self.menuBar(); m_data = mb.addMenu("Data")
+        m_data.addAction("Load TLE File...", self.load_tle_file); m_data.addAction("Generate Walker...", self.open_walker_gen)
+        m_topo = mb.addMenu("Topology"); m_topo.addAction("Settings...", self.open_topology_settings)
+        m_sim = mb.addMenu("Simulation")
+        self.act_play = QAction("Start", self); self.act_play.triggered.connect(self.toggle_sim); self.act_play.setEnabled(False)
+        m_sim.addAction(self.act_play); m_sim.addAction("Set Step Size...", self.open_step_settings)
+        m_sim.addSeparator(); m_sim.addAction("Export Simulation Data...", self.open_export_settings)
 
-        self.chk_inc = QCheckBox("Inc Filter"); self.chk_inc.setChecked(True)
-        self.spin_inc = QDoubleSpinBox(); self.spin_inc.setRange(0, 180); self.spin_inc.setValue(0.0); self.spin_inc.setSuffix(" °")
-        self.spin_tol_inc = QDoubleSpinBox(); self.spin_tol_inc.setRange(0, 180); self.spin_tol_inc.setValue(0.0); self.spin_tol_inc.setPrefix("± ")
-
-        grid_filters.addWidget(self.chk_alt, 0, 0)
-        grid_filters.addWidget(self.spin_alt, 0, 1)
-        grid_filters.addWidget(self.spin_tol_alt, 0, 2)
-        grid_filters.addWidget(self.chk_inc, 1, 0)
-        grid_filters.addWidget(self.spin_inc, 1, 1)
-        grid_filters.addWidget(self.spin_tol_inc, 1, 2)
-        layout_tle.addLayout(grid_filters)
-        
-        self.btn_load.clicked.connect(self.load_tle_file)
-        self.chk_alt.toggled.connect(self.spin_alt.setEnabled)
-        self.chk_alt.toggled.connect(self.trigger_filter_update)
-        self.chk_inc.toggled.connect(self.spin_inc.setEnabled)
-        self.chk_inc.toggled.connect(self.trigger_filter_update)
-        self.spin_alt.valueChanged.connect(self.trigger_filter_update)
-        self.spin_inc.valueChanged.connect(self.trigger_filter_update)
-        self.spin_tol_alt.valueChanged.connect(self.trigger_filter_update)
-        self.spin_tol_inc.valueChanged.connect(self.trigger_filter_update)
-
-        # ==========================================
-        # Tab 2: Walker Constellation 
-        # ==========================================
-        tab_walker = QWidget()
-        layout_walker = QVBoxLayout(tab_walker)
-        layout_walker.setContentsMargins(5, 10, 5, 5)
-        
-        grid_walker = QGridLayout()
-        self.spin_w_t = QSpinBox(); self.spin_w_t.setRange(1, 10000); self.spin_w_t.setValue(1584)
-        self.spin_w_p = QSpinBox(); self.spin_w_p.setRange(1, 1000); self.spin_w_p.setValue(72)
-        self.spin_w_f = QSpinBox(); self.spin_w_f.setRange(0, 1000); self.spin_w_f.setValue(39)
-        self.spin_w_alt = QDoubleSpinBox(); self.spin_w_alt.setRange(100, 10000); self.spin_w_alt.setValue(550.0); self.spin_w_alt.setSuffix(" km")
-        self.spin_w_inc = QDoubleSpinBox(); self.spin_w_inc.setRange(0, 180); self.spin_w_inc.setValue(53.0); self.spin_w_inc.setSuffix(" °")
-
-        grid_walker.addWidget(QLabel("Total Sats (T):"), 0, 0); grid_walker.addWidget(self.spin_w_t, 0, 1)
-        grid_walker.addWidget(QLabel("Planes (P):"), 1, 0); grid_walker.addWidget(self.spin_w_p, 1, 1)
-        grid_walker.addWidget(QLabel("Phase Factor (F):"), 2, 0); grid_walker.addWidget(self.spin_w_f, 2, 1)
-        grid_walker.addWidget(QLabel("Altitude:"), 3, 0); grid_walker.addWidget(self.spin_w_alt, 3, 1)
-        grid_walker.addWidget(QLabel("Inclination:"), 4, 0); grid_walker.addWidget(self.spin_w_inc, 4, 1)
-        
-        layout_walker.addLayout(grid_walker)
-        
-        self.btn_generate = QPushButton("Generate Constellation")
-        self.btn_generate.setObjectName("PrimaryBtn")
-        self.btn_generate.setCursor(Qt.PointingHandCursor)
-        self.btn_generate.clicked.connect(self.generate_walker)
-        layout_walker.addWidget(self.btn_generate)
-
-        self.tabs_data.addTab(tab_tle, "TLE File")
-        self.tabs_data.addTab(tab_walker, "Walker Generation")
-        card_data.addWidget(self.tabs_data)
-        
-        main_layout.addWidget(card_data)
-        
-        # --- Card 2: Strategy ---
-        card_strat = DashboardCard("Topology", "🌐")
-        
-        self.combo_strat = QComboBox()
-        self.combo_strat.addItems(["Distance Only", "+ Grid (Star)", "Ultra Long Range", "+ Grid (Delta)"])
-        card_strat.addWidget(self.combo_strat)
-        
-        self.param_widget = QWidget()
-        self.param_widget.setStyleSheet("background: transparent;")
-        p_layout = QVBoxLayout(self.param_widget)
-        p_layout.setContentsMargins(0,0,0,0)
-        p_layout.setSpacing(6)
-
-        def add_param_row(label, widget):
-            h = QHBoxLayout()
-            lbl = QLabel(label)
-            lbl.setMinimumWidth(90)
-            lbl.setStyleSheet("color: #aaaaaa;")
-            h.addWidget(lbl)
-            h.addWidget(widget)
-            p_layout.addLayout(h)
-            return widget
-        
-        self.chk_polar_cut = QCheckBox("Enable Polar Cut")
-        self.chk_polar_cut.setChecked(False) 
-        self.chk_polar_cut.setToolTip("断开高纬度地区的异轨链路（模拟极轨星座特性）")
-        p_layout.addWidget(self.chk_polar_cut)
-        
-        self.spin_polar_lat = add_param_row("Cut Latitude:", QDoubleSpinBox())
-        self.spin_polar_lat.setRange(0, 90); self.spin_polar_lat.setValue(70.0); self.spin_polar_lat.setSuffix(" °")
-
-        self.spin_plane_tol = add_param_row("Plane Tol:", QDoubleSpinBox())
-        self.spin_plane_tol.setRange(0, 180); self.spin_plane_tol.setValue(0.0); self.spin_plane_tol.setSingleStep(0.5); self.spin_plane_tol.setSuffix(" °")
-
-        self.spin_neighbor_tol = add_param_row("Neigh. Tol:", QDoubleSpinBox())
-        self.spin_neighbor_tol.setRange(0, 180); self.spin_neighbor_tol.setValue(0.0); self.spin_neighbor_tol.setSuffix(" °")
-
-        self.spin_intra = add_param_row("Intra Dist:", QSpinBox())
-        self.spin_intra.setRange(0, 50000); self.spin_intra.setValue(0); self.spin_intra.setSingleStep(100); self.spin_intra.setSuffix(" km")
-
-        self.spin_inter = add_param_row("Inter Dist:", QSpinBox())
-        self.spin_inter.setRange(0, 50000); self.spin_inter.setValue(0); self.spin_inter.setSingleStep(100); self.spin_inter.setSuffix(" km")
-        
-        self.spin_gsl = add_param_row("GSL Radius:", QSpinBox())
-        self.spin_gsl.setRange(0, 20000); self.spin_gsl.setValue(0); self.spin_gsl.setSingleStep(100); self.spin_gsl.setSuffix(" km")
-        
-        card_strat.addWidget(self.param_widget)
-        
-        self.combo_strat.currentIndexChanged.connect(self.update_strategy_params)
-        self.chk_polar_cut.toggled.connect(self.update_strategy_params)
-        self.chk_polar_cut.toggled.connect(self.spin_polar_lat.setEnabled)
-        self.spin_polar_lat.valueChanged.connect(self.update_strategy_params)
-        self.spin_plane_tol.valueChanged.connect(self.update_strategy_params)
-        self.spin_neighbor_tol.valueChanged.connect(self.update_strategy_params)
-        self.spin_intra.valueChanged.connect(self.update_strategy_params)
-        self.spin_inter.valueChanged.connect(self.update_strategy_params)
-        self.spin_gsl.valueChanged.connect(self.update_strategy_params)
-
-        main_layout.addWidget(card_strat)
-
-        # --- Card 3: Monitor ---
-        card_mon = DashboardCard("Monitor", "📊")
-        self.combo_monitor = QComboBox()
-        self.combo_monitor.addItems([
-            "Global: Link Counts", 
-            "Path: Latency (ms)", 
-            "Path: Hop Count", 
-            "Path: Jitter (ms)",
-            "Path: Handover Count"
-        ])
-        card_mon.addWidget(self.combo_monitor)
-        self.combo_monitor.currentIndexChanged.connect(self.on_chart_mode_changed)
-        main_layout.addWidget(card_mon)
-
-        # --- Card 4: Simulation ---
-        card_sim = DashboardCard("Simulation", "⏱️")
-        
-        grid_sim = QGridLayout()
-        grid_sim.addWidget(QLabel("Step Size:"), 0, 0)
-        self.spin_step = QDoubleSpinBox(); self.spin_step.setRange(0, 3600); self.spin_step.setValue(1.0); self.spin_step.setSuffix(" s")
-        grid_sim.addWidget(self.spin_step, 0, 1)
-        
-        grid_sim.addWidget(QLabel("Exp Duration:"), 1, 0)
-        self.spin_duration = QSpinBox(); self.spin_duration.setRange(0, 36000); self.spin_duration.setValue(0); self.spin_duration.setSuffix(" s")
-        grid_sim.addWidget(self.spin_duration, 1, 1)
-        card_sim.addLayout(grid_sim)
-        
-        h_btns = QHBoxLayout()
-        self.btn_run = QPushButton("Start Simulation")
-        self.btn_run.setObjectName("PrimaryBtn")
-        self.btn_run.setMinimumHeight(40)
-        self.btn_run.setCursor(Qt.PointingHandCursor)
-        self.btn_run.clicked.connect(self.toggle_sim)
-        self.btn_run.setEnabled(False)
-        
-        self.btn_export = QPushButton("Export Data")
-        self.btn_export.setMinimumHeight(40)
-        self.btn_export.setCursor(Qt.PointingHandCursor)
-        self.btn_export.clicked.connect(self.start_export)
-        self.btn_export.setEnabled(False)
-
-        h_btns.addWidget(self.btn_run)
-        h_btns.addWidget(self.btn_export)
-        card_sim.addLayout(h_btns)
-        
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0); self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(4) 
-        card_sim.addWidget(self.progress_bar)
-        
-        main_layout.addWidget(card_sim)
-
-        # --- Info Log ---
-        self.txt_info = QTextEdit()
-        self.txt_info.setReadOnly(True)
-        self.txt_info.setMaximumHeight(150)
-        self.txt_info.setPlaceholderText(">>> System Ready.\n>>> Waiting for data...")
-        main_layout.addWidget(self.txt_info)
-        
-        main_layout.addStretch() 
-
-        # --- 设置 Dock ---
-        splitter.addWidget(scroll)
-        
-        self.chart = LinkStatsChart()
-        chart_container = QWidget()
-        chart_container.setStyleSheet("background-color: #1e1e1e;") 
-        chart_layout = QVBoxLayout(chart_container)
-        chart_layout.setContentsMargins(5, 5, 5, 5)
-        chart_layout.addWidget(self.chart)
-        
-        splitter.addWidget(chart_container)
-        splitter.setStretchFactor(0, 5) 
-        splitter.setStretchFactor(1, 2) 
-        
-        dock.setWidget(splitter)
-        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
-        
-        self.update_strategy_params()
-
-    # ==========================================
-    # 数据加载与生成逻辑
-    # ==========================================
-    def load_tle_file(self):
-        fname, _ = QFileDialog.getOpenFileName(self, "Open TLE", "", "Files (*.txt *.tle)")
-        if fname:
+    def on_table_selection(self):
+        self.selected_link_pairs = set()
+        # [核心修改] 遍历所有被选中的行，加入集合
+        selected_rows = set(item.row() for item in self.table.selectedItems())
+        for row in selected_rows:
             try:
-                if self.timer.isActive(): self.toggle_sim()
-                with open(fname, 'r') as f: self.current_tle_content = f.read()
-                self.reapply_filters()
-            except Exception as e: QMessageBox.critical(self, "Error", str(e))
+                src = self.table.item(row, 1).data(Qt.UserRole)  # 获取隐藏保存的 index
+                tgt = self.table.item(row, 2).data(Qt.UserRole)
+                if src is not None and tgt is not None:
+                    self.selected_link_pairs.add((src, tgt))
+            except: pass
+        if not self.is_playing: self.loop(advance=False)
 
-    def trigger_filter_update(self):
-        self.filter_debounce_timer.start()
+    def open_walker_gen(self):
+        dlg = WalkerDialog(self)
+        if dlg.exec() == QDialog.Accepted and (c := self.calculator.generate_walker(dlg.spin_t.value(), dlg.spin_p.value(), dlg.spin_f.value(), dlg.spin_alt.value(), dlg.spin_inc.value(), self.current_time)):
+            self.act_play.setEnabled(True); self.loop(False)
 
-    def reapply_filters(self):
-        if not self.current_tle_content: return
-        try:
-            f_alt = self.spin_alt.value() if self.chk_alt.isChecked() else None
-            f_inc = self.spin_inc.value() if self.chk_inc.isChecked() else None
-            t_alt = self.spin_tol_alt.value()
-            t_inc = self.spin_tol_inc.value()
-            
-            count = self.calculator.load_tle_data(self.current_tle_content, filter_alt=f_alt, alt_tol=t_alt, filter_inc=f_inc, inc_tol=t_inc)
-            
-            self.lbl_file_status.setText(f"Active: {count} Sats")
-            self.lbl_file_status.setStyleSheet("color: #4caf50; font-weight: bold;") 
-            has_sats = count > 0
-            self.btn_run.setEnabled(has_sats); self.btn_export.setEnabled(has_sats)
-            if has_sats:
-                self.update_strategy_params()
-                if not self.is_playing: self.loop(advance_time=False)
-            else:
-                self.visualizer.update_scene(np.empty((0,3)), np.empty((0,3)), np.array([]), np.array([]))
-        except Exception as e: print(f"Filter update error: {e}")
+    def open_topology_settings(self):
+        dlg = TopologyDialog(self.strategy_idx, self)
+        if dlg.exec() == QDialog.Accepted:
+            idx = dlg.combo_strat.currentIndex(); self.strategy_idx = idx
+            if idx == 0: self.strategy = DistanceStrategy(max_isl_dist=dlg.spin_dist.value())
+            elif idx == 1: self.strategy = StarlinkMeshStrategy(plane_tolerance=dlg.spin_plane_tol.value(), max_intra_dist=dlg.spin_intra.value(), max_inter_dist=dlg.spin_inter.value(), enable_polar_cut=dlg.chk_polar.isChecked(), polar_cut_lat=dlg.spin_polar_lat.value())
+            elif idx == 2: self.strategy = DistanceStrategy(max_isl_dist=5000)
+            elif idx == 3: self.strategy = WalkerDeltaStrategy(turnaround_lat=dlg.spin_delta_lat.value())
+            self.loop(False)
 
-    def generate_walker(self):
-        t = self.spin_w_t.value()
-        p = self.spin_w_p.value()
-        f = self.spin_w_f.value()
-        alt = self.spin_w_alt.value()
-        inc = self.spin_w_inc.value()
+    def open_step_settings(self):
+        val, ok = QInputDialog.getDouble(self, "Set Step Size", "Enter simulation step size in seconds:", self.step_size, 0.1, 3600.0, 1)
+        if ok: self.step_size = val
 
-        if t % p != 0:
-            QMessageBox.warning(self, "Invalid Parameters", "Total satellites (T) must be exactly divisible by planes (P).")
-            return
-        if f >= p:
-            QMessageBox.warning(self, "Invalid Parameters", "Phase factor (F) must be strictly less than the number of planes (P).")
-            return
+    def open_export_settings(self):
+        dlg = ExportDialog(self)
+        if dlg.exec() == QDialog.Accepted and dlg.path:
+            success, msg = self.exporter.start(dlg.path, self.current_time, dlg.spin_duration.value())
+            if success: QMessageBox.information(self, "Export", "Export started.")
 
-        try:
-            if self.timer.isActive(): 
-                self.toggle_sim()
-            
-            self.current_tle_content = None 
-
-            count = self.calculator.generate_walker(t, p, f, alt, inc, self.current_time)
-            
-            self.lbl_file_status.setText(f"Walker: {count} Sats")
-            self.lbl_file_status.setStyleSheet("color: #4caf50; font-weight: bold;") 
-            
-            has_sats = count > 0
-            self.btn_run.setEnabled(has_sats)
-            self.btn_export.setEnabled(has_sats)
-            
-            if has_sats:
-                self.update_strategy_params()
-                if not self.is_playing: 
-                    self.loop(advance_time=False) 
-            else:
-                self.visualizer.update_scene(np.empty((0,3)), np.empty((0,3)), np.array([]), np.array([]))
-                
-            self.txt_info.setText(f">>> Generated Walker Constellation ({t}/{p}/{f})\n>>> System Ready.")
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Generation Error", str(e))
-
-    # ==========================================
-    # 策略与控制逻辑
-    # ==========================================
-    def update_strategy_params(self):
-        idx = self.combo_strat.currentIndex()
-        
-        p_tol = self.spin_plane_tol.value()
-        n_tol = self.spin_neighbor_tol.value()
-        d_intra = self.spin_intra.value()
-        d_inter = self.spin_inter.value()
-        gsl_dist = self.spin_gsl.value()
-        
-        is_cut = self.chk_polar_cut.isChecked()
-        cut_lat = self.spin_polar_lat.value()
-        
-        self.param_widget.setEnabled(True) 
-
-        if idx == 0: # Distance Only
-            self.strategy = DistanceStrategy(max_isl_dist=d_intra if d_intra > 0 else 2000)
-            self.spin_plane_tol.setEnabled(False); self.spin_neighbor_tol.setEnabled(False); self.spin_inter.setEnabled(False)
-            self.chk_polar_cut.setEnabled(False); self.spin_polar_lat.setEnabled(False) 
-            self.spin_gsl.setEnabled(True)
-            
-        elif idx == 1: # + Grid
-            self.strategy = StarlinkMeshStrategy(
-                plane_tolerance=p_tol, 
-                max_intra_dist=d_intra, 
-                max_inter_dist=d_inter, 
-                neighbor_tolerance=n_tol, 
-                max_gsl_dist=gsl_dist,
-                enable_polar_cut=is_cut, 
-                polar_cut_lat=cut_lat    
-            )
-            self.spin_plane_tol.setEnabled(True); self.spin_neighbor_tol.setEnabled(True); self.spin_inter.setEnabled(True)
-            self.chk_polar_cut.setEnabled(True); self.spin_polar_lat.setEnabled(is_cut) 
-            self.spin_gsl.setEnabled(True)
-            
-        elif idx == 2: # Ultra Long
-            self.strategy = DistanceStrategy(max_isl_dist=5000)
-            self.param_widget.setEnabled(False)
-
-        elif idx == 3: # + Grid (Delta)
-            # 如果没有勾选 Enable Polar Cut，就把阈值设为 90 度，相当于永不断开
-            active_cut_lat = cut_lat if is_cut else 90.0
-            
-            self.strategy = WalkerDeltaStrategy(
-                turnaround_lat=active_cut_lat, 
-                max_gsl_dist=gsl_dist
-            )
-            # 纯数学映射，不需要这些容差和距离参数
-            self.spin_plane_tol.setEnabled(False)
-            self.spin_neighbor_tol.setEnabled(False)
-            self.spin_intra.setEnabled(False)
-            self.spin_inter.setEnabled(False)
-            
-            # 启用掉头熔断相关控制
-            self.chk_polar_cut.setEnabled(True)
-            self.spin_polar_lat.setEnabled(is_cut)
-            self.spin_gsl.setEnabled(True)
-
-        if not self.is_playing and self.btn_run.isEnabled(): self.loop(advance_time=False)
-
-    def start_export(self):
-        if self.exporter.is_active: return
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory")
-        if not dir_path: return
-        duration_sec = self.spin_duration.value()
-        success, msg = self.exporter.start(dir_path, self.current_time, duration_sec)
-        if success:
-            self.btn_export.setText("Stop Export"); self.btn_export.setObjectName("DangerBtn")
-            self.btn_export.setStyleSheet("background-color: #d32f2f; border: 1px solid #d32f2f;") 
-            self.btn_run.setEnabled(False); self.input_widgets_enabled(False)
-            if not self.timer.isActive(): self.timer.start(50)
-        else: QMessageBox.critical(self, "Export Error", msg)
-
-    def stop_export(self):
-        self.exporter.stop()
-        self.btn_export.setText("Export Data"); self.btn_export.setObjectName("")
-        self.btn_export.setStyleSheet("") 
-        self.btn_run.setEnabled(True); self.input_widgets_enabled(True); self.progress_bar.setValue(0)
-        QMessageBox.information(self, "Finished", "Export done.")
-
-    def input_widgets_enabled(self, val):
-        self.param_widget.setEnabled(val); self.btn_load.setEnabled(val); self.btn_generate.setEnabled(val)
+    def load_tle_file(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Open TLE", "", "Files (*.txt *.tle)")
+        if f:
+            with open(f, 'r') as file:
+                if self.calculator.load_tle_data(file.read()): self.act_play.setEnabled(True); self.loop(False)
 
     def toggle_sim(self):
-        if self.is_playing: 
-            self.timer.stop()
-            self.btn_run.setText("Resume Simulation")
-            self.btn_run.setObjectName("")
-            self.btn_run.setStyleSheet("")
-            self.is_playing = False
-        else: 
-            self.timer.start(50)
-            self.btn_run.setText("Pause Simulation")
-            self.btn_run.setObjectName("DangerBtn")
-            self.btn_run.setStyleSheet("background-color: #d32f2f; border: 1px solid #d32f2f;")
-            self.is_playing = True
+        self.is_playing = not self.is_playing
+        self.act_play.setText("Pause" if self.is_playing else "Start")
+        if self.is_playing: self.timer.start(100)
+        else: self.timer.stop()
 
-    def on_chart_mode_changed(self):
-        mode_text = self.combo_monitor.currentText()
-        if "Link Counts" in mode_text:
-            self.chart.set_mode("COUNT")
-        elif "Latency" in mode_text:
-            self.chart.set_mode("LATENCY")
-        elif "Hop" in mode_text:
-            self.chart.set_mode("HOPS")
-        elif "Jitter" in mode_text:
-            self.chart.set_mode("JITTER")
-        elif "Handover" in mode_text:
-            self.chart.set_mode("HANDOVER")
-            
-    def on_sat_picked(self, idx):
-        self.selected_node = idx
-        if not self.is_playing and self.btn_run.isEnabled():
-            self.loop(advance_time=False)
+    def change_page(self, d):
+        self.current_page += d; self.refresh_table_view()
 
-    def on_routes_updated(self, paths):
-        self.active_paths = paths
-        self.last_latencies = {}
-        self.last_paths = {}
-        self.handover_counts = {}
+    def refresh_table_view(self):
+        search = self.txt_search.text().strip()
+        # [修改] 检索逻辑现在完全基于字符串名字匹配 (如 "1203")
+        filtered = [r for r in self.all_links_data if not search or (("-" in search and search in [f"{r['src_name']}-{r['tgt_name']}", f"{r['tgt_name']}-{r['src_name']}"]) or search in (r['src_name'], r['tgt_name']))]
         
-        if not paths:
-            self.txt_info.setText(">>> Monitoring Standby.\n(Click node to inspect. Ctrl+Click to route.)")
-            self.chart.update_dict_data({}) 
-            self.selected_node = -1 
-        else:
-            msg = f">>> Tracking {len(paths)} Active Paths:\n"
-            for (u, v) in paths:
-                msg += f" [LINK] Sat-{u} <==> Sat-{v}\n"
-            self.txt_info.setText(msg)
+        total_p = max(1, (len(filtered) + self.page_size - 1) // self.page_size)
+        self.current_page = max(1, min(self.current_page, total_p))
+        self.lbl_page.setText(f"Page {self.current_page} / {total_p}"); self.lbl_stats.setText(f"Total Active ISLs: {len(self.all_links_data)}")
 
-        if not self.is_playing and self.btn_run.isEnabled():
-            self.loop(advance_time=False)
-
-    def loop(self, advance_time=True):
-        step_seconds = self.spin_step.value()
-        if self.is_playing and step_seconds <= 0.0 and advance_time: step_seconds = 0.1 
-
-        if self.exporter.is_active:
-            advance_time = True
-            if step_seconds <= 0: step_seconds = 1.0
-
-        if advance_time: 
-            self.current_time += timedelta(seconds=step_seconds)
+        self.table.blockSignals(True); self.table.setUpdatesEnabled(False); self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(page_data := filtered[(self.current_page - 1) * self.page_size : self.current_page * self.page_size]))
+        
+        for i, d in enumerate(page_data):
+            it_id = QTableWidgetItem(); it_id.setData(Qt.EditRole, d['id'])
             
+            # [核心修改] 将原先的真实数组坐标 index 保存在 Qt.UserRole 中作为安全标记
+            it_src = QTableWidgetItem(d['src_name'])
+            it_src.setData(Qt.UserRole, d['src'])
+            
+            it_tgt = QTableWidgetItem(d['tgt_name'])
+            it_tgt.setData(Qt.UserRole, d['tgt'])
+            
+            it_lat = QTableWidgetItem(); it_lat.setData(Qt.EditRole, d['latency'])
+            for it in (it_id, it_src, it_tgt): it.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(i, 0, it_id); self.table.setItem(i, 1, it_src); self.table.setItem(i, 2, it_tgt); self.table.setItem(i, 3, it_lat)
+            
+            # 恢复之前的多选状态
+            if (d['src'], d['tgt']) in self.selected_link_pairs or (d['tgt'], d['src']) in self.selected_link_pairs: 
+                self.table.selectRow(i)
+            
+        self.table.setSortingEnabled(True); self.table.setUpdatesEnabled(True); self.table.blockSignals(False)
+
+    def loop(self, advance=True):
+        if advance: self.current_time += timedelta(seconds=self.step_size)
         self.calculator.propagate(self.current_time)
-        sat_coords = np.array([s.position for s in self.calculator.satellites], dtype=np.float32)
+        sats = np.array([s.position for s in self.calculator.satellites], dtype=np.float32)
         
-        isl, gsl = self.strategy.compute_links(self.calculator.satellites, self.gs_coords)
-        self.current_isl = isl
+        isl, self.all_links_data = self.strategy.compute_links(self.calculator.satellites)
         
-        chart_data = {}
-        highlight_segments = []
-        current_mode = self.combo_monitor.currentText()
-        
-        if len(self.active_paths) > 0:
-            self.path_finder.build_graph(self.calculator.satellites, isl)
-            info_msg = f"TIME: {self.current_time.strftime('%H:%M:%S')}\n"
-            info_msg += "-"*30 + "\n"
-            
-            for (src, tgt) in self.active_paths:
-                label = f"{src}->{tgt}"
-                latency, path = self.path_finder.find_shortest_path(src, tgt)
-                
-                if latency is not None:
-                    if len(path) > 1:
-                        for i in range(len(path)-1):
-                            highlight_segments.extend([2, path[i], path[i+1]])
-
-                    val_to_plot = 0
-                    
-                    if "Latency" in current_mode:
-                        val_to_plot = latency
-                        info_msg += f" √ {label}: {latency:.1f}ms\n"
-                        
-                    elif "Hop" in current_mode:
-                        hops = len(path) - 1
-                        val_to_plot = hops
-                        info_msg += f" √ {label}: {hops} hops\n"
-                        
-                    elif "Jitter" in current_mode:
-                        last_val = self.last_latencies.get(label, latency)
-                        jitter = abs(latency - last_val)
-                        self.last_latencies[label] = latency 
-                        val_to_plot = jitter
-                        info_msg += f" √ {label}: Jitter {jitter:.2f}ms\n"
-
-                    elif "Handover" in current_mode:
-                        prev_path = self.last_paths.get(label, None)
-                        if prev_path is not None and path != prev_path:
-                            self.handover_counts[label] = self.handover_counts.get(label, 0) + 1
-                        
-                        self.last_paths[label] = path 
-                        count = self.handover_counts.get(label, 0)
-                        val_to_plot = count
-                        info_msg += f" √ {label}: Switches {count}\n"
-                    
-                    else:
-                        val_to_plot = latency
-                        
-                    chart_data[label] = val_to_plot
-                    
-                else:
-                    if "Handover" in current_mode:
-                        chart_data[label] = self.handover_counts.get(label, 0)
-                    else:
-                        chart_data[label] = 0
-                    info_msg += f" X {label}: UNREACHABLE\n"
-            self.txt_info.setText(info_msg)
-            
-        elif self.selected_node != -1:
-            count = 0
-            for i in range(0, len(isl), 3):
-                u = isl[i+1]
-                v = isl[i+2]
-                if u == self.selected_node or v == self.selected_node:
-                    highlight_segments.extend([2, u, v])
-                    count += 1
-            if "Link Counts" in current_mode:
-                self.txt_info.setText(f"TARGET: Sat-{self.selected_node}\nSTATUS: Online\nNEIGHBORS: {count} Active Links")
-
-        else:
-            if "Link Counts" in current_mode:
-                self.txt_info.setText(f"TIME: {self.current_time.strftime('%H:%M:%S')}\nNETWORK STATUS:\n • ISL Links: {len(isl)//3}\n • GSL Links: {len(gsl)//3}")
-
-        if "Link Counts" in current_mode:
-            chart_data = {"ISL Count": len(isl)//3, "GSL Count": len(gsl)//3}
-        
-        self.chart.update_dict_data(chart_data)
-        
-        hl_array = np.array(highlight_segments, dtype=np.int32) if len(highlight_segments) > 0 else None
-        self.visualizer.update_scene(sat_coords, self.gs_coords, isl, gsl, highlight_lines=hl_array)
-
         if self.exporter.is_active:
-            self.exporter.record_frame(self.current_time, self.calculator.satellites, isl, gsl)
-            total_sec = (self.exporter.end_time_ref - self.exporter.start_time_ref).total_seconds()
-            elapsed = (self.current_time - self.exporter.start_time_ref).total_seconds()
-            if total_sec > 0: self.progress_bar.setValue(min(int((elapsed/total_sec)*100), 100))
-            if self.current_time >= self.exporter.end_time_ref: self.stop_export()
+            # 导出直接传全部数据字典
+            self.exporter.record_frame(self.current_time, self.calculator.satellites, self.all_links_data)
+            if self.current_time >= self.exporter.end_time_ref: self.exporter.stop()
+
+        self.refresh_table_view()
+        
+        # [核心修改] 将所有被选中的线，拼凑成长数组传给 pyvista 引擎
+        hl_lines = []
+        for src, tgt in self.selected_link_pairs:
+            hl_lines.extend([2, src, tgt])
+        hl_array = np.array(hl_lines, dtype=np.int32) if hl_lines else np.empty((0,), dtype=np.int32)
+        
+        self.visualizer.update_scene(sats, isl, highlight_lines=hl_array)
