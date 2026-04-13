@@ -24,8 +24,8 @@ class Strategy:
                     'id': i + 1, 
                     'src': u_list[i], 
                     'tgt': v_list[i], 
-                    'src_name': satellites[u_list[i]].name,  # [新增] 携带源卫星名字
-                    'tgt_name': satellites[v_list[i]].name,  # [新增] 携带目标卫星名字
+                    'src_name': satellites[u_list[i]].name, 
+                    'tgt_name': satellites[v_list[i]].name,
                     'latency': round(latencies[i], 4) 
                 })
                 

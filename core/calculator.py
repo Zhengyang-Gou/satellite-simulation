@@ -34,7 +34,7 @@ class OrbitCalculator:
                 if filter_inc is not None and keep and abs(inclination_deg - filter_inc) > inc_tol: keep = False
 
                 if keep:
-                    if name == "SAT": name = f"SAT-{satrec.satnum}"
+                    if name == "SAT": name = f"{satrec.satnum}"
                     sat = Satellite(sat_id=satrec.satnum, name=name, line1=l1, line2=l2)
                     sat._sgp4 = satrec; sat.altitude = float(alt_km); sat.inclination = float(inclination_deg)
                     sat.raan = float(np.degrees(satrec.nodeo) % 360.0); sat.is_walker = False
@@ -54,15 +54,13 @@ class OrbitCalculator:
             for s in range(S):
                 raan = p * delta_raan
                 ma = (s * delta_ma + p * phase_shift) % 360.0
-                
-                # [核心修改] 命名规则：轨道号(2位) + 卫星序号(2位)，例如 1203
+                # 命名规则：轨道号(2位) + 卫星序号(2位)，例如 1203
                 name = f"{p+1:02d}{s+1:02d}"
                 
                 sat = Satellite(sat_id=sat_id_counter, name=name, line1="", line2="")
                 sat.is_walker = True; sat.plane_idx = p; sat.node_idx = s
                 sat.altitude = alt_km; sat.inclination = inc_deg; sat.raan = raan
                 sat.mean_anomaly = ma; sat.arg_perigee = 0.0 ; sat._sgp4 = None 
-                
                 self.satellites.append(sat)
                 sat_id_counter += 1
         return len(self.satellites)

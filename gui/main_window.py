@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QStyledItemDelegate, QStyle, QDialogButtonBox,
                                QInputDialog)
 from PySide6.QtCore import QTimer, Qt, QRect
-from PySide6.QtGui import QColor, QPainter, QAction
+from PySide6.QtGui import QColor, QPainter, QAction, QFont
 
 from .visualizer import Visualizer
 from core.calculator import OrbitCalculator
@@ -18,29 +18,49 @@ from core.strategies import DistanceStrategy, StarlinkMeshStrategy, WalkerDeltaS
 
 DARK_THEME = """
 QMainWindow, QWidget, QDialog { background-color: #1e1e1e; color: #cccccc; font-family: "Segoe UI", sans-serif; font-size: 13px; }
-QTableWidget { background-color: #252526; border: 1px solid #333333; gridline-color: #3e3e42; }
+QTableWidget { background-color: #252526; border: 1px solid #333333; gridline-color: #3e3e42; outline: none; alternate-background-color: #1e1e1e;}
 QHeaderView::section { background-color: #2d2d2d; border: 1px solid #3e3e42; padding: 4px; font-weight: bold;}
+QTableWidget::item { border-bottom: 1px solid #333333; }
+QTableWidget::item:hover { background-color: #2a2d2f; }
 QTableWidget::item:selected { background-color: #094771; }
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #3c3c3c; border: 1px solid #555; padding: 3px; color: #fff; border-radius: 3px;}
+QLineEdit { background-color: #333333; border: 1px solid #444444; padding: 4px 8px; color: #fff; border-radius: 12px;}
+QLineEdit:focus { border: 1px solid #007acc; background-color: #1e1e1e;}
+QSpinBox, QDoubleSpinBox, QComboBox { background-color: #3c3c3c; border: 1px solid #555; padding: 3px; color: #fff; border-radius: 3px;}
 QPushButton { background-color: #3c3c3c; border: 1px solid #555; padding: 5px 15px; color: #fff; border-radius: 3px;}
 QPushButton:hover { background-color: #4c4c4c; }
+QScrollBar:vertical { border: none; background: #1e1e1e; width: 8px; margin: 0px; }
+QScrollBar::handle:vertical { background: #555555; border-radius: 4px; min-height: 20px; }
+QScrollBar::handle:vertical:hover { background: #777777; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QScrollBar:horizontal { border: none; background: #1e1e1e; height: 8px; margin: 0px; }
+QScrollBar::handle:horizontal { background: #555555; border-radius: 4px; min-width: 20px; }
+QScrollBar::handle:horizontal:hover { background: #777777; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
 """
 
 class LatencyDelegate(QStyledItemDelegate):
     def __init__(self, max_latency=25.0, parent=None):
         super().__init__(parent)
         self.max_latency = max_latency
+        
     def paint(self, painter, option, index):
         try: latency = float(index.data(Qt.EditRole))
         except: return super().paint(painter, option, index)
+        
         ratio = min(max(latency / self.max_latency, 0.0), 1.0)
-        color = QColor(int(255 * ratio), int(255 * (1.0 - ratio)), 50)
+        color = QColor(int(255 * ratio), int(200 * (1.0 - ratio)), 60, 200) 
+        
         painter.save()
+        painter.setPen(Qt.NoPen)
         if option.state & QStyle.State_Selected: painter.fillRect(option.rect, QColor("#094771"))
-        else: painter.fillRect(option.rect, QColor("#252526"))
+        else: painter.fillRect(option.rect, QColor("#252526") if index.row() % 2 == 1 else QColor("#1e1e1e"))
+        
         bar_rect = QRect(option.rect.x() + 4, option.rect.y() + 4, int((option.rect.width() - 8) * ratio), option.rect.height() - 8)
-        painter.fillRect(bar_rect, color)
-        painter.setPen(QColor("#ffffff")); painter.drawText(option.rect, Qt.AlignCenter, f"{latency:.4f} ms")
+        painter.setBrush(color); painter.drawRoundedRect(bar_rect, 4, 4)
+        
+        text = f"{latency:.4f} ms"
+        painter.setPen(QColor(0, 0, 0, 150)); painter.drawText(option.rect.translated(1, 1), Qt.AlignCenter, text)
+        painter.setPen(QColor("#ffffff")); painter.drawText(option.rect, Qt.AlignCenter, text)
         painter.restore()
 
 class WalkerDialog(QDialog):
@@ -100,8 +120,6 @@ class MainWindow(QMainWindow):
         self.strategy = DistanceStrategy(max_isl_dist=2000); self.strategy_idx = 0
         self.step_size = 1.0; self.is_playing = False; self.current_time = datetime.utcnow()
         self.all_links_data = []
-        
-        # [核心修改] 将单选变量改为多选集合 Set
         self.selected_link_pairs = set() 
         
         self._init_ui(); self._init_menu()
@@ -115,18 +133,18 @@ class MainWindow(QMainWindow):
         
         bottom = QWidget(); b_layout = QVBoxLayout(bottom)
         tool_layout = QHBoxLayout()
-        self.txt_search = QLineEdit(); self.txt_search.setPlaceholderText("Filter Name (e.g. '1203' or '1203-1204')..."); self.txt_search.setFixedWidth(250)
+        self.txt_search = QLineEdit(); self.txt_search.setPlaceholderText("Filter Name (e.g. '1203' or '1203-1204')..."); self.txt_search.setFixedWidth(300)
         self.txt_search.textChanged.connect(self.refresh_table_view)
         self.lbl_stats = QLabel("Active Links: 0")
         tool_layout.addWidget(self.txt_search); tool_layout.addStretch(); tool_layout.addWidget(self.lbl_stats); b_layout.addLayout(tool_layout)
 
         self.table = QTableWidget(0, 4)
+        table_font = QFont("Consolas", 10); table_font.setStyleHint(QFont.Monospace); self.table.setFont(table_font)
+        self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(["Link ID", "Source", "Target", "Latency (ms)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setItemDelegateForColumn(3, LatencyDelegate(25.0)); self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        
-        # [核心修改] 开启 ExtendedSelection 支持 Ctrl 多选
         self.table.setSelectionMode(QTableWidget.ExtendedSelection) 
         self.table.itemSelectionChanged.connect(self.on_table_selection)
         b_layout.addWidget(self.table)
@@ -152,14 +170,12 @@ class MainWindow(QMainWindow):
 
     def on_table_selection(self):
         self.selected_link_pairs = set()
-        # [核心修改] 遍历所有被选中的行，加入集合
         selected_rows = set(item.row() for item in self.table.selectedItems())
         for row in selected_rows:
             try:
-                src = self.table.item(row, 1).data(Qt.UserRole)  # 获取隐藏保存的 index
+                src = self.table.item(row, 1).data(Qt.UserRole)
                 tgt = self.table.item(row, 2).data(Qt.UserRole)
-                if src is not None and tgt is not None:
-                    self.selected_link_pairs.add((src, tgt))
+                if src is not None and tgt is not None: self.selected_link_pairs.add((src, tgt))
             except: pass
         if not self.is_playing: self.loop(advance=False)
 
@@ -185,8 +201,7 @@ class MainWindow(QMainWindow):
     def open_export_settings(self):
         dlg = ExportDialog(self)
         if dlg.exec() == QDialog.Accepted and dlg.path:
-            success, msg = self.exporter.start(dlg.path, self.current_time, dlg.spin_duration.value())
-            if success: QMessageBox.information(self, "Export", "Export started.")
+            if self.exporter.start(dlg.path, self.current_time, dlg.spin_duration.value())[0]: QMessageBox.information(self, "Export", "Export started.")
 
     def load_tle_file(self):
         f, _ = QFileDialog.getOpenFileName(self, "Open TLE", "", "Files (*.txt *.tle)")
@@ -205,7 +220,6 @@ class MainWindow(QMainWindow):
 
     def refresh_table_view(self):
         search = self.txt_search.text().strip()
-        # [修改] 检索逻辑现在完全基于字符串名字匹配 (如 "1203")
         filtered = [r for r in self.all_links_data if not search or (("-" in search and search in [f"{r['src_name']}-{r['tgt_name']}", f"{r['tgt_name']}-{r['src_name']}"]) or search in (r['src_name'], r['tgt_name']))]
         
         total_p = max(1, (len(filtered) + self.page_size - 1) // self.page_size)
@@ -217,21 +231,13 @@ class MainWindow(QMainWindow):
         
         for i, d in enumerate(page_data):
             it_id = QTableWidgetItem(); it_id.setData(Qt.EditRole, d['id'])
-            
-            # [核心修改] 将原先的真实数组坐标 index 保存在 Qt.UserRole 中作为安全标记
-            it_src = QTableWidgetItem(d['src_name'])
-            it_src.setData(Qt.UserRole, d['src'])
-            
-            it_tgt = QTableWidgetItem(d['tgt_name'])
-            it_tgt.setData(Qt.UserRole, d['tgt'])
-            
+            it_src = QTableWidgetItem(d['src_name']); it_src.setData(Qt.UserRole, d['src'])
+            it_tgt = QTableWidgetItem(d['tgt_name']); it_tgt.setData(Qt.UserRole, d['tgt'])
             it_lat = QTableWidgetItem(); it_lat.setData(Qt.EditRole, d['latency'])
+            
             for it in (it_id, it_src, it_tgt): it.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(i, 0, it_id); self.table.setItem(i, 1, it_src); self.table.setItem(i, 2, it_tgt); self.table.setItem(i, 3, it_lat)
-            
-            # 恢复之前的多选状态
-            if (d['src'], d['tgt']) in self.selected_link_pairs or (d['tgt'], d['src']) in self.selected_link_pairs: 
-                self.table.selectRow(i)
+            if (d['src'], d['tgt']) in self.selected_link_pairs or (d['tgt'], d['src']) in self.selected_link_pairs: self.table.selectRow(i)
             
         self.table.setSortingEnabled(True); self.table.setUpdatesEnabled(True); self.table.blockSignals(False)
 
@@ -243,16 +249,13 @@ class MainWindow(QMainWindow):
         isl, self.all_links_data = self.strategy.compute_links(self.calculator.satellites)
         
         if self.exporter.is_active:
-            # 导出直接传全部数据字典
             self.exporter.record_frame(self.current_time, self.calculator.satellites, self.all_links_data)
             if self.current_time >= self.exporter.end_time_ref: self.exporter.stop()
 
         self.refresh_table_view()
         
-        # [核心修改] 将所有被选中的线，拼凑成长数组传给 pyvista 引擎
         hl_lines = []
-        for src, tgt in self.selected_link_pairs:
-            hl_lines.extend([2, src, tgt])
+        for src, tgt in self.selected_link_pairs: hl_lines.extend([2, src, tgt])
         hl_array = np.array(hl_lines, dtype=np.int32) if hl_lines else np.empty((0,), dtype=np.int32)
         
         self.visualizer.update_scene(sats, isl, highlight_lines=hl_array)
