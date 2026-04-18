@@ -32,9 +32,13 @@ class Visualizer(QWidget):
         else:
             self.plotter.add_mesh(sphere, color='#112233', style='wireframe', opacity=0.3)
         self.plotter.add_axes()
-        self.plotter.camera.position = (20000, 0, 0)
         
-        # 开启高级渲染特性
+        self.plotter.camera_position = [
+            (35000, 25000, 15000), 
+            (0, 0, 0), 
+            (0, 0, 1)
+        ]
+        
         self.plotter.enable_anti_aliasing('msaa', multi_samples=4)
         self.plotter.enable_depth_peeling()
 

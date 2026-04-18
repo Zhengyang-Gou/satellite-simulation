@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.spatial import cKDTree
 
 class Strategy:
     def compute_links(self, satellites):
@@ -31,25 +30,11 @@ class Strategy:
                 
         return isl_arr, link_stats
 
-class DistanceStrategy(Strategy):
-    def __init__(self, max_isl_dist=2000):
-        self.max_isl = max_isl_dist
-    def compute_links(self, satellites):
-        if not satellites: return np.array([], dtype=np.int32), []
-        valid_idxs = [i for i, s in enumerate(satellites) if np.linalg.norm(s.position) > 100]
-        if not valid_idxs: return np.array([], dtype=np.int32), []
-            
-        coords = np.array([satellites[i].position for i in valid_idxs])
-        isl = []
-        if len(coords) > 1:
-            pairs = cKDTree(coords).query_pairs(r=self.max_isl)
-            for p in pairs: isl.extend([2, valid_idxs[p[0]], valid_idxs[p[1]]])
-        return self._format_output(isl, satellites)
-
-class StarlinkMeshStrategy(Strategy):
+class GridStarStrategy(Strategy):
     def __init__(self, plane_tolerance=6.0, max_intra_dist=5000, max_inter_dist=5000, enable_polar_cut=False, polar_cut_lat=70.0):
         self.plane_tol = plane_tolerance; self.max_intra = max_intra_dist; self.max_inter = max_inter_dist
         self.enable_polar_cut = enable_polar_cut; self.polar_cut_lat = polar_cut_lat
+        
     def compute_links(self, satellites):
         if not satellites: return np.array([], dtype=np.int32), []
         sats_data = []
@@ -67,7 +52,8 @@ class StarlinkMeshStrategy(Strategy):
         planes_list = []; current_plane = [sats_data[0]]
         for k in range(1, len(sats_data)):
             curr = sats_data[k]; prev = sats_data[k-1]
-            diff = min(abs(curr['raan'] - prev['raan']), 360.0 - abs(curr['raan'] - prev['raan']))
+            # 优化：通过模运算计算最短角度差
+            diff = abs((curr['raan'] - prev['raan'] + 180.0) % 360.0 - 180.0)
             if diff > self.plane_tol: planes_list.append(current_plane); current_plane = []
             current_plane.append(curr)
         planes_list.append(current_plane)
@@ -84,10 +70,10 @@ class StarlinkMeshStrategy(Strategy):
                     if np.linalg.norm(u_node['pos_eci'] - v_node['pos_eci']) <= self.max_intra: add_edge(u_node['idx'], v_node['idx'])
             
             neighbor_plane = planes_list[(p_idx + 1) % num_planes]
-            if min(abs(plane_nodes[0]['raan'] - neighbor_plane[0]['raan']), 360.0 - abs(plane_nodes[0]['raan'] - neighbor_plane[0]['raan'])) > self.plane_tol * 2: continue 
+            if abs((plane_nodes[0]['raan'] - neighbor_plane[0]['raan'] + 180.0) % 360.0 - 180.0) > self.plane_tol * 2: continue 
             
             for u_node in plane_nodes:
-                best_v = min(neighbor_plane, key=lambda v: min(abs(u_node['u'] - v['u']), 360.0 - abs(u_node['u'] - v['u'])))
+                best_v = min(neighbor_plane, key=lambda v: abs((u_node['u'] - v['u'] + 180.0) % 360.0 - 180.0))
                 if not (self.enable_polar_cut and (abs(u_node['lat']) > self.polar_cut_lat or abs(best_v['lat']) > self.polar_cut_lat)):
                     if np.linalg.norm(u_node['pos_eci'] - best_v['pos_eci']) <= self.max_inter: add_edge(u_node['idx'], best_v['idx'])
 
@@ -95,9 +81,10 @@ class StarlinkMeshStrategy(Strategy):
         for u, v in isl_edges: isl_lines.extend([2, u, v])
         return self._format_output(isl_lines, satellites)
 
-class WalkerDeltaStrategy(Strategy):
+class GridDeltaStrategy(Strategy):
     def __init__(self, turnaround_lat=51.0):
         self.turnaround_lat = turnaround_lat; self.static_edges = None 
+        
     def compute_links(self, satellites):
         if not satellites or not getattr(satellites[0], 'is_walker', False): return np.array([], dtype=np.int32), []
         if self.static_edges is None:

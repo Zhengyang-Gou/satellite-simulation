@@ -9,38 +9,51 @@ class OrbitCalculator:
         self.epoch_time = None 
 
     def load_tle_data(self, tle_text, filter_alt=None, alt_tol=50, filter_inc=None, inc_tol=1.0):
-        lines = tle_text.strip().split('\n')
+        # 优化解析：过滤空行
+        lines = [line.strip() for line in tle_text.strip().split('\n') if line.strip()]
         self.satellites = []
         self.epoch_time = None 
-        lines = [L.strip() for L in lines if L.strip()]
         
-        mu = 3.986004418e14; R_earth = 6371.0
+        mu = 3.986004418e14
+        R_earth = 6371.0
+
         i = 0
         while i < len(lines):
-            line = lines[i]
-            if line.startswith("1 "):
-                l1 = lines[i]; l2 = lines[i+1]; i += 2; name = f"SAT"
-            else:
-                name = line; l1 = lines[i+1]; l2 = lines[i+2]; i += 3
+            # 判断是否带有卫星名称的行
+            has_name = not lines[i].startswith("1 ")
+            name = lines[i] if has_name else "SAT"
+            l1 = lines[i + (1 if has_name else 0)]
+            l2 = lines[i + (2 if has_name else 1)]
+            i += 3 if has_name else 2
 
             try:
                 satrec = Satrec.twoline2rv(l1, l2)
-                n = satrec.no_kozai / 60.0
-                alt_km = (a / 1000.0) - R_earth if (a := (mu / (n ** 2)) ** (1.0 / 3) if n > 0 else 0) else 0
+                
+                # 简化复杂的物理计算公式
+                n_rad_per_min = satrec.no_kozai / 60.0
+                if n_rad_per_min <= 0: continue
+                
+                a_meters = (mu / (n_rad_per_min ** 2)) ** (1.0 / 3)
+                alt_km = (a_meters / 1000.0) - R_earth
                 inclination_deg = np.degrees(satrec.inclo) % 360.0
 
-                keep = True
-                if filter_alt is not None and abs(alt_km - filter_alt) > alt_tol: keep = False
-                if filter_inc is not None and keep and abs(inclination_deg - filter_inc) > inc_tol: keep = False
+                # 扁平化的过滤逻辑
+                if filter_alt is not None and abs(alt_km - filter_alt) > alt_tol: continue
+                if filter_inc is not None and abs(inclination_deg - filter_inc) > inc_tol: continue
 
-                if keep:
-                    if name == "SAT": name = f"{satrec.satnum}"
-                    sat = Satellite(sat_id=satrec.satnum, name=name, line1=l1, line2=l2)
-                    sat._sgp4 = satrec; sat.altitude = float(alt_km); sat.inclination = float(inclination_deg)
-                    sat.raan = float(np.degrees(satrec.nodeo) % 360.0); sat.is_walker = False
-                    sat.position = np.array([0.0, 0.0, 0.0]); sat.position_eci = np.array([0.0, 0.0, 0.0]) 
-                    self.satellites.append(sat)
-            except: pass     
+                if name == "SAT": name = str(satrec.satnum)
+                
+                sat = Satellite(sat_id=satrec.satnum, name=name, line1=l1, line2=l2)
+                sat._sgp4 = satrec
+                sat.altitude = float(alt_km)
+                sat.inclination = float(inclination_deg)
+                sat.raan = float(np.degrees(satrec.nodeo) % 360.0)
+                sat.is_walker = False
+                sat.position = np.array([0.0, 0.0, 0.0])
+                sat.position_eci = np.array([0.0, 0.0, 0.0]) 
+                self.satellites.append(sat)
+            except Exception:
+                pass     
         return len(self.satellites)
 
     def generate_walker(self, T, P, F, alt_km, inc_deg, current_time: datetime):
@@ -54,7 +67,6 @@ class OrbitCalculator:
             for s in range(S):
                 raan = p * delta_raan
                 ma = (s * delta_ma + p * phase_shift) % 360.0
-                # 命名规则：轨道号(2位) + 卫星序号(2位)，例如 1203
                 name = f"{p+1:02d}{s+1:02d}"
                 
                 sat = Satellite(sat_id=sat_id_counter, name=name, line1="", line2="")

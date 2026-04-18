@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QPainter, QAction, QFont
 from .visualizer import Visualizer
 from core.calculator import OrbitCalculator
 from core.exporter import DataExporter
-from core.strategies import DistanceStrategy, StarlinkMeshStrategy, WalkerDeltaStrategy
+from core.strategies import GridStarStrategy, GridDeltaStrategy
 
 DARK_THEME = """
 QMainWindow, QWidget, QDialog { background-color: #1e1e1e; color: #cccccc; font-family: "Segoe UI", sans-serif; font-size: 13px; }
@@ -28,14 +28,6 @@ QLineEdit:focus { border: 1px solid #007acc; background-color: #1e1e1e;}
 QSpinBox, QDoubleSpinBox, QComboBox { background-color: #3c3c3c; border: 1px solid #555; padding: 3px; color: #fff; border-radius: 3px;}
 QPushButton { background-color: #3c3c3c; border: 1px solid #555; padding: 5px 15px; color: #fff; border-radius: 3px;}
 QPushButton:hover { background-color: #4c4c4c; }
-QScrollBar:vertical { border: none; background: #1e1e1e; width: 8px; margin: 0px; }
-QScrollBar::handle:vertical { background: #555555; border-radius: 4px; min-height: 20px; }
-QScrollBar::handle:vertical:hover { background: #777777; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-QScrollBar:horizontal { border: none; background: #1e1e1e; height: 8px; margin: 0px; }
-QScrollBar::handle:horizontal { background: #555555; border-radius: 4px; min-width: 20px; }
-QScrollBar::handle:horizontal:hover { background: #777777; }
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
 """
 
 class LatencyDelegate(QStyledItemDelegate):
@@ -44,21 +36,32 @@ class LatencyDelegate(QStyledItemDelegate):
         self.max_latency = max_latency
         
     def paint(self, painter, option, index):
-        try: latency = float(index.data(Qt.EditRole))
-        except: return super().paint(painter, option, index)
-        
-        ratio = min(max(latency / self.max_latency, 0.0), 1.0)
-        color = QColor(int(255 * ratio), int(200 * (1.0 - ratio)), 60, 200) 
+        data = index.data(Qt.EditRole)
+        is_down = str(data).lower() == "down"
         
         painter.save()
         painter.setPen(Qt.NoPen)
-        if option.state & QStyle.State_Selected: painter.fillRect(option.rect, QColor("#094771"))
-        else: painter.fillRect(option.rect, QColor("#252526") if index.row() % 2 == 1 else QColor("#1e1e1e"))
+        if option.state & QStyle.State_Selected: 
+            painter.fillRect(option.rect, QColor("#094771"))
+        else: 
+            painter.fillRect(option.rect, QColor("#252526") if index.row() % 2 == 1 else QColor("#1e1e1e"))
         
+        if is_down:
+            color = QColor(200, 50, 50, 180) 
+            text = "down"
+            ratio = 1.0
+        else:
+            try: 
+                latency = float(data)
+                ratio = min(max(latency / self.max_latency, 0.0), 1.0)
+                color = QColor(int(255 * ratio), int(200 * (1.0 - ratio)), 60, 200) 
+                text = f"{latency:.4f} ms"
+            except: 
+                return super().paint(painter, option, index)
+            
         bar_rect = QRect(option.rect.x() + 4, option.rect.y() + 4, int((option.rect.width() - 8) * ratio), option.rect.height() - 8)
         painter.setBrush(color); painter.drawRoundedRect(bar_rect, 4, 4)
         
-        text = f"{latency:.4f} ms"
         painter.setPen(QColor(0, 0, 0, 150)); painter.drawText(option.rect.translated(1, 1), Qt.AlignCenter, text)
         painter.setPen(QColor("#ffffff")); painter.drawText(option.rect, Qt.AlignCenter, text)
         painter.restore()
@@ -81,26 +84,24 @@ class TopologyDialog(QDialog):
     def __init__(self, current_strategy_idx, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Network Topology Settings"); self.setMinimumWidth(350); layout = QVBoxLayout(self)
-        self.combo_strat = QComboBox(); self.combo_strat.addItems(["Distance Only", "Starlink Mesh (Grid)", "Ultra Long Range", "Walker Delta O(1)"])
-        self.combo_strat.setCurrentIndex(current_strategy_idx); layout.addWidget(QLabel("Connection Strategy:")); layout.addWidget(self.combo_strat)
-        self.panel_dist = QWidget(); l_dist = QFormLayout(self.panel_dist)
-        self.spin_dist = QSpinBox(); self.spin_dist.setRange(0, 20000); self.spin_dist.setValue(2000); self.spin_dist.setSuffix(" km"); l_dist.addRow("Max ISL Distance:", self.spin_dist)
+        self.combo_strat = QComboBox(); self.combo_strat.addItems(["+Grid（Star）", "+Grid（Delta）"]); self.combo_strat.setCurrentIndex(current_strategy_idx)
+        layout.addWidget(QLabel("Connection Strategy:")); layout.addWidget(self.combo_strat)
         self.panel_mesh = QWidget(); l_mesh = QFormLayout(self.panel_mesh)
         self.spin_plane_tol = QDoubleSpinBox(); self.spin_plane_tol.setValue(6.0); self.spin_plane_tol.setSuffix(" °")
         self.spin_intra = QSpinBox(); self.spin_intra.setRange(0, 10000); self.spin_intra.setValue(5000); self.spin_intra.setSuffix(" km")
         self.spin_inter = QSpinBox(); self.spin_inter.setRange(0, 10000); self.spin_inter.setValue(5000); self.spin_inter.setSuffix(" km")
-        self.chk_polar = QCheckBox("Enable Polar Cut (极地熔断)"); self.chk_polar.setChecked(True)
+        self.chk_polar = QCheckBox("Enable Polar Cut"); self.chk_polar.setChecked(True)
         self.spin_polar_lat = QDoubleSpinBox(); self.spin_polar_lat.setRange(0, 90); self.spin_polar_lat.setValue(70.0); self.spin_polar_lat.setSuffix(" °")
         l_mesh.addRow("Plane Tolerance:", self.spin_plane_tol); l_mesh.addRow("Max Intra-plane Dist:", self.spin_intra); l_mesh.addRow("Max Inter-plane Dist:", self.spin_inter)
         l_mesh.addRow(self.chk_polar); l_mesh.addRow("Cutoff Latitude:", self.spin_polar_lat)
         self.panel_delta = QWidget(); l_delta = QFormLayout(self.panel_delta)
         self.spin_delta_lat = QDoubleSpinBox(); self.spin_delta_lat.setRange(0, 90); self.spin_delta_lat.setValue(70.0); self.spin_delta_lat.setSuffix(" °"); l_delta.addRow("Turnaround Latitude:", self.spin_delta_lat)
-        layout.addWidget(self.panel_dist); layout.addWidget(self.panel_mesh); layout.addWidget(self.panel_delta)
+        layout.addWidget(self.panel_mesh); layout.addWidget(self.panel_delta)
         self.combo_strat.currentIndexChanged.connect(self.update_panels); self.update_panels(current_strategy_idx)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); btns.accepted.connect(self.accept); btns.rejected.connect(self.reject); layout.addWidget(btns)
 
     def update_panels(self, idx):
-        self.panel_dist.setVisible(idx == 0); self.panel_mesh.setVisible(idx == 1); self.panel_delta.setVisible(idx == 3)
+        self.panel_mesh.setVisible(idx == 0); self.panel_delta.setVisible(idx == 1)
 
 class ExportDialog(QDialog):
     def __init__(self, parent=None):
@@ -117,10 +118,16 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Satellite Network Simulation Pro"); self.resize(1200, 900); self.setStyleSheet(DARK_THEME)
         self.calculator = OrbitCalculator(); self.exporter = DataExporter()
-        self.strategy = DistanceStrategy(max_isl_dist=2000); self.strategy_idx = 0
+        self.strategy = GridStarStrategy(); self.strategy_idx = 0
         self.step_size = 1.0; self.is_playing = False; self.current_time = datetime.utcnow()
-        self.all_links_data = []
+        self.all_links_data = [] 
+        
+        self.link_registry = {}  
+        self.is_topology_locked = False
         self.selected_link_pairs = set() 
+        
+        self.page_size = 10  # 强制规定一页只显示 10 条
+        self.current_page = 1
         
         self._init_ui(); self._init_menu()
         self.timer = QTimer(); self.timer.timeout.connect(self.loop)
@@ -133,7 +140,7 @@ class MainWindow(QMainWindow):
         
         bottom = QWidget(); b_layout = QVBoxLayout(bottom)
         tool_layout = QHBoxLayout()
-        self.txt_search = QLineEdit(); self.txt_search.setPlaceholderText("Filter Name (e.g. '1203' or '1203-1204')..."); self.txt_search.setFixedWidth(300)
+        self.txt_search = QLineEdit(); self.txt_search.setPlaceholderText("Filter Name..."); self.txt_search.setFixedWidth(300)
         self.txt_search.textChanged.connect(self.refresh_table_view)
         self.lbl_stats = QLabel("Active Links: 0")
         tool_layout.addWidget(self.txt_search); tool_layout.addStretch(); tool_layout.addWidget(self.lbl_stats); b_layout.addLayout(tool_layout)
@@ -143,19 +150,30 @@ class MainWindow(QMainWindow):
         self.table.setAlternatingRowColors(True)
         self.table.setHorizontalHeaderLabels(["Link ID", "Source", "Target", "Latency (ms)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setItemDelegateForColumn(3, LatencyDelegate(25.0)); self.table.setSortingEnabled(True)
+        
+        # 强制拉伸行高填满空间，彻底消灭遮挡问题
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False) # 隐藏难看的自带序号，让界面更整洁
+        
+        self.table.setItemDelegateForColumn(3, LatencyDelegate(25.0))
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.ExtendedSelection) 
+        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers) 
+        
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.wheelEvent = lambda event: event.ignore()  
+        
         self.table.itemSelectionChanged.connect(self.on_table_selection)
         b_layout.addWidget(self.table)
         
-        self.page_size = 15; self.current_page = 1
         page_layout = QHBoxLayout()
         self.btn_prev = QPushButton("◄ Prev"); self.btn_prev.clicked.connect(lambda: self.change_page(-1))
         self.lbl_page = QLabel("Page 1/1")
         self.btn_next = QPushButton("Next ►"); self.btn_next.clicked.connect(lambda: self.change_page(1))
         page_layout.addStretch(); page_layout.addWidget(self.btn_prev); page_layout.addWidget(self.lbl_page); page_layout.addWidget(self.btn_next); page_layout.addStretch()
         b_layout.addLayout(page_layout)
+        
         splitter.addWidget(bottom); splitter.setStretchFactor(0, 6); splitter.setStretchFactor(1, 4)
         layout.addWidget(splitter)
 
@@ -177,21 +195,34 @@ class MainWindow(QMainWindow):
                 tgt = self.table.item(row, 2).data(Qt.UserRole)
                 if src is not None and tgt is not None: self.selected_link_pairs.add((src, tgt))
             except: pass
-        if not self.is_playing: self.loop(advance=False)
+        if not self.is_playing: 
+            hl_lines = []
+            for src, tgt in self.selected_link_pairs: hl_lines.extend([2, src, tgt])
+            hl_array = np.array(hl_lines, dtype=np.int32) if hl_lines else np.empty((0,), dtype=np.int32)
+            sats = np.array([s.position for s in self.calculator.satellites], dtype=np.float32)
+            self.visualizer.update_scene(sats, self.visualizer.cached_isl, highlight_lines=hl_array)
+
+    def change_page(self, d):
+        self.current_page += d; self.refresh_table_view()
+
+    def reset_simulation_state(self):
+        self.link_registry.clear()
+        self.is_topology_locked = False
+        self.current_page = 1
 
     def open_walker_gen(self):
         dlg = WalkerDialog(self)
         if dlg.exec() == QDialog.Accepted and (c := self.calculator.generate_walker(dlg.spin_t.value(), dlg.spin_p.value(), dlg.spin_f.value(), dlg.spin_alt.value(), dlg.spin_inc.value(), self.current_time)):
+            self.reset_simulation_state()
             self.act_play.setEnabled(True); self.loop(False)
 
     def open_topology_settings(self):
         dlg = TopologyDialog(self.strategy_idx, self)
         if dlg.exec() == QDialog.Accepted:
             idx = dlg.combo_strat.currentIndex(); self.strategy_idx = idx
-            if idx == 0: self.strategy = DistanceStrategy(max_isl_dist=dlg.spin_dist.value())
-            elif idx == 1: self.strategy = StarlinkMeshStrategy(plane_tolerance=dlg.spin_plane_tol.value(), max_intra_dist=dlg.spin_intra.value(), max_inter_dist=dlg.spin_inter.value(), enable_polar_cut=dlg.chk_polar.isChecked(), polar_cut_lat=dlg.spin_polar_lat.value())
-            elif idx == 2: self.strategy = DistanceStrategy(max_isl_dist=5000)
-            elif idx == 3: self.strategy = WalkerDeltaStrategy(turnaround_lat=dlg.spin_delta_lat.value())
+            if idx == 0: self.strategy = GridStarStrategy(plane_tolerance=dlg.spin_plane_tol.value(), max_intra_dist=dlg.spin_intra.value(), max_inter_dist=dlg.spin_inter.value(), enable_polar_cut=dlg.chk_polar.isChecked(), polar_cut_lat=dlg.spin_polar_lat.value())
+            elif idx == 1: self.strategy = GridDeltaStrategy(turnaround_lat=dlg.spin_delta_lat.value())
+            self.reset_simulation_state()
             self.loop(False)
 
     def open_step_settings(self):
@@ -207,7 +238,9 @@ class MainWindow(QMainWindow):
         f, _ = QFileDialog.getOpenFileName(self, "Open TLE", "", "Files (*.txt *.tle)")
         if f:
             with open(f, 'r') as file:
-                if self.calculator.load_tle_data(file.read()): self.act_play.setEnabled(True); self.loop(False)
+                if self.calculator.load_tle_data(file.read()): 
+                    self.reset_simulation_state()
+                    self.act_play.setEnabled(True); self.loop(False)
 
     def toggle_sim(self):
         self.is_playing = not self.is_playing
@@ -215,41 +248,120 @@ class MainWindow(QMainWindow):
         if self.is_playing: self.timer.start(100)
         else: self.timer.stop()
 
-    def change_page(self, d):
-        self.current_page += d; self.refresh_table_view()
-
     def refresh_table_view(self):
         search = self.txt_search.text().strip()
         filtered = [r for r in self.all_links_data if not search or (("-" in search and search in [f"{r['src_name']}-{r['tgt_name']}", f"{r['tgt_name']}-{r['src_name']}"]) or search in (r['src_name'], r['tgt_name']))]
         
         total_p = max(1, (len(filtered) + self.page_size - 1) // self.page_size)
         self.current_page = max(1, min(self.current_page, total_p))
-        self.lbl_page.setText(f"Page {self.current_page} / {total_p}"); self.lbl_stats.setText(f"Total Active ISLs: {len(self.all_links_data)}")
+        self.lbl_page.setText(f"Page {self.current_page} / {total_p}")
+        active_count = sum(1 for d in self.link_registry.values() if str(d['latency']).lower() != "down")
+        self.lbl_stats.setText(f"Active Links: {active_count}")
 
-        self.table.blockSignals(True); self.table.setUpdatesEnabled(False); self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(page_data := filtered[(self.current_page - 1) * self.page_size : self.current_page * self.page_size]))
+        start_idx = (self.current_page - 1) * self.page_size
+        page_data = filtered[start_idx : start_idx + self.page_size]
+
+        self.table.blockSignals(True)
+        self.table.setSortingEnabled(False) 
+        
+        if self.table.rowCount() != len(page_data):
+            self.table.setRowCount(len(page_data))
+            for i in range(len(page_data)):
+                it_id = QTableWidgetItem(); it_src = QTableWidgetItem()
+                it_tgt = QTableWidgetItem(); it_lat = QTableWidgetItem()
+                for it in (it_id, it_src, it_tgt, it_lat): 
+                    it.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(i, 0, it_id); self.table.setItem(i, 1, it_src)
+                self.table.setItem(i, 2, it_tgt); self.table.setItem(i, 3, it_lat)
         
         for i, d in enumerate(page_data):
-            it_id = QTableWidgetItem(); it_id.setData(Qt.EditRole, d['id'])
-            it_src = QTableWidgetItem(d['src_name']); it_src.setData(Qt.UserRole, d['src'])
-            it_tgt = QTableWidgetItem(d['tgt_name']); it_tgt.setData(Qt.UserRole, d['tgt'])
-            it_lat = QTableWidgetItem(); it_lat.setData(Qt.EditRole, d['latency'])
+            if self.table.item(i, 0).data(Qt.EditRole) != d['id']:
+                self.table.item(i, 0).setData(Qt.EditRole, d['id'])
+                
+            if self.table.item(i, 1).text() != d['src_name']:
+                self.table.item(i, 1).setText(d['src_name'])
+                self.table.item(i, 1).setData(Qt.UserRole, d['src'])
+                
+            if self.table.item(i, 2).text() != d['tgt_name']:
+                self.table.item(i, 2).setText(d['tgt_name'])
+                self.table.item(i, 2).setData(Qt.UserRole, d['tgt'])
+                
+            if self.table.item(i, 3).data(Qt.EditRole) != d['latency']:
+                self.table.item(i, 3).setData(Qt.EditRole, d['latency'])
+                
+            if (d['src'], d['tgt']) in self.selected_link_pairs or (d['tgt'], d['src']) in self.selected_link_pairs: 
+                self.table.selectRow(i)
+                
+        self.table.blockSignals(False)
+
+    def _build_full_topology_registry(self, satellites):
+        """ 上帝视角：强行获取最大理论连通图并焊死名单 """
+        self.link_registry.clear()
+        
+        if isinstance(self.strategy, GridDeltaStrategy):
+            if self.strategy.static_edges is None:
+                self.strategy.compute_links(satellites)
+            for edge_type, u, v in self.strategy.static_edges:
+                k = tuple(sorted([u, v]))
+                self.link_registry[k] = {
+                    'src': u, 'tgt': v,
+                    'src_name': satellites[u].name, 'tgt_name': satellites[v].name,
+                    'latency': 'down'
+                }
+        else:
+            old_intra = self.strategy.max_intra
+            old_inter = self.strategy.max_inter
+            old_polar = self.strategy.enable_polar_cut
             
-            for it in (it_id, it_src, it_tgt): it.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(i, 0, it_id); self.table.setItem(i, 1, it_src); self.table.setItem(i, 2, it_tgt); self.table.setItem(i, 3, it_lat)
-            if (d['src'], d['tgt']) in self.selected_link_pairs or (d['tgt'], d['src']) in self.selected_link_pairs: self.table.selectRow(i)
+            self.strategy.max_intra = 999999
+            self.strategy.max_inter = 999999
+            self.strategy.enable_polar_cut = False
             
-        self.table.setSortingEnabled(True); self.table.setUpdatesEnabled(True); self.table.blockSignals(False)
+            _, all_links = self.strategy.compute_links(satellites)
+            
+            self.strategy.max_intra = old_intra
+            self.strategy.max_inter = old_inter
+            self.strategy.enable_polar_cut = old_polar
+            
+            for d in all_links:
+                k = tuple(sorted([d['src'], d['tgt']]))
+                self.link_registry[k] = {
+                    'src': d['src'], 'tgt': d['tgt'],
+                    'src_name': d['src_name'], 'tgt_name': d['tgt_name'],
+                    'latency': 'down'
+                }
+                
+        self.all_links_data = sorted(self.link_registry.values(), key=lambda x: (x['src_name'], x['tgt_name']))
+        for i, d in enumerate(self.all_links_data):
+            d['id'] = i + 1
 
     def loop(self, advance=True):
         if advance: self.current_time += timedelta(seconds=self.step_size)
         self.calculator.propagate(self.current_time)
         sats = np.array([s.position for s in self.calculator.satellites], dtype=np.float32)
         
-        isl, self.all_links_data = self.strategy.compute_links(self.calculator.satellites)
+        # 1. 拦截初始化：上帝视角焊死名单
+        if not self.is_topology_locked:
+            self._build_full_topology_registry(self.calculator.satellites)
+            self.is_topology_locked = True
+            
+        # 2. 计算当前真实的物理链路状态
+        isl, active_links = self.strategy.compute_links(self.calculator.satellites)
         
+        # 3. 状态核对更新 (严格遵守只改不增)
+        current_active_keys = set()
+        for d in active_links:
+            k = tuple(sorted([d['src'], d['tgt']]))
+            if k in self.link_registry:
+                self.link_registry[k]['latency'] = d['latency']
+                current_active_keys.add(k)
+                
+        for k in self.link_registry:
+            if k not in current_active_keys:
+                self.link_registry[k]['latency'] = "down"
+                
         if self.exporter.is_active:
-            self.exporter.record_frame(self.current_time, self.calculator.satellites, self.all_links_data)
+            self.exporter.record_frame(self.current_time, self.calculator.satellites, active_links)
             if self.current_time >= self.exporter.end_time_ref: self.exporter.stop()
 
         self.refresh_table_view()
