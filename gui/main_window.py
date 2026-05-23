@@ -47,7 +47,7 @@ class MainWindow(QMainWindow):
 
         self.redis_config = redis_config_from_env()
         self.redis_enabled = bool(self.redis_config.get("enabled", False))
-        self.redis_query_interval = env_int("SATNET_REDIS_QUERY_INTERVAL", 5)
+        self.redis_query_interval = env_int("SATNET_REDIS_QUERY_INTERVAL", 2)
         self.redis_query_counter = 0
         self.redis_query_seq = 0
         self.redis_query_in_flight = False
@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self._init_menu()
+        self.statusBar().showMessage("Ready")
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.loop)
@@ -76,7 +77,7 @@ class MainWindow(QMainWindow):
         self.redis_worker = RedisQueryWorker(redis_config)
         self.redis_worker.moveToThread(self.redis_worker_thread)
         self.redis_query_requested.connect(self.redis_worker.query)
-        self.redis_worker.result_ready.connect(self._apply_redis_delay_result)
+        self.redis_worker.result_ready.connect(self._apply_redis_result)
         self.redis_worker.error.connect(self._handle_redis_error)
         self.redis_worker_thread.start()
 
@@ -226,6 +227,7 @@ class MainWindow(QMainWindow):
             self.registry.all_links_data,
             redis_in_flight=self.redis_query_in_flight,
             redis_last_error=self.redis_last_error,
+            active_count=self.registry.active_count,
         )
 
     def open_walker_gen(self) -> None:
@@ -270,11 +272,9 @@ class MainWindow(QMainWindow):
                 plane_tolerance=dlg.spin_plane_tol.value(),
                 max_intra_dist=dlg.spin_intra.value(),
                 max_inter_dist=dlg.spin_inter.value(),
-                enable_polar_cut=dlg.chk_polar.isChecked(),
-                polar_cut_lat=dlg.spin_polar_lat.value(),
             )
         else:
-            self.strategy = GridDeltaStrategy(turnaround_lat=dlg.spin_delta_lat.value())
+            self.strategy = GridDeltaStrategy()
 
         self.reset_simulation_state()
         if self.calculator.satellites:
@@ -359,13 +359,18 @@ class MainWindow(QMainWindow):
         )
 
     @Slot(int, object)
-    def _apply_redis_delay_result(self, query_id: int, redis_delay_map: Dict[LinkKey, Any]) -> None:
+    def _apply_redis_result(self, query_id: int, redis_result: Dict[str, Dict[LinkKey, Any]]) -> None:
         if query_id != self.redis_query_seq:
             return
 
         self.redis_query_in_flight = False
         self.redis_last_error = ""
-        self.registry.apply_redis_delays(redis_delay_map)
+        if isinstance(redis_result, dict) and "cal" in redis_result:
+            self.registry.apply_redis_cal(redis_result.get("cal", {}))
+            if self.redis_config.get("loss_enabled", False):
+                self.registry.apply_redis_loss(redis_result.get("loss", {}))
+        else:
+            self.registry.apply_redis_cal(redis_result)
         self._refresh_table()
 
     @Slot(int, str)
@@ -408,6 +413,9 @@ class MainWindow(QMainWindow):
             sats,
             isl,
             highlight_lines=link_pairs_to_lines(self.selected_link_pairs),
+        )
+        self.statusBar().showMessage(
+            f"Satellites: {len(self.calculator.satellites)} | Active Links: {len(active_links)}"
         )
 
     def closeEvent(self, event) -> None:

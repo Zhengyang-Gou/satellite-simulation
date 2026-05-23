@@ -20,14 +20,15 @@ def is_down(value: Any) -> bool:
 
 
 def satellite_positions_array(satellites: Iterable[Any]) -> np.ndarray:
-    satellites = list(satellites)
+    if not isinstance(satellites, list):
+        satellites = list(satellites)
     if not satellites:
-        return np.empty((0, 3), dtype=np.float32)
-    return np.array([s.position for s in satellites], dtype=np.float32)
+        return np.empty((0, 3), dtype=np.float64)
+    return np.asarray([s.position for s in satellites], dtype=np.float64)
 
 
 def link_pairs_to_lines(link_pairs: Iterable[LinkKey]) -> np.ndarray:
     lines: List[int] = []
-    for src, tgt in link_pairs:
+    for src, tgt in sorted(link_pairs):
         lines.extend([2, int(src), int(tgt)])
-    return np.array(lines, dtype=np.int32) if lines else np.empty((0,), dtype=np.int32)
+    return np.asarray(lines, dtype=np.int64) if lines else np.empty((0,), dtype=np.int64)

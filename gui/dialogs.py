@@ -96,31 +96,11 @@ class TopologyDialog(QDialog):
         self.spin_inter.setValue(5000)
         self.spin_inter.setSuffix(" km")
 
-        self.chk_polar = QCheckBox("Enable Polar Cut")
-        self.chk_polar.setChecked(True)
-
-        self.spin_polar_lat = QDoubleSpinBox()
-        self.spin_polar_lat.setRange(0, 90)
-        self.spin_polar_lat.setValue(70.0)
-        self.spin_polar_lat.setSuffix(" °")
-
         l_mesh.addRow("Plane Tolerance:", self.spin_plane_tol)
         l_mesh.addRow("Max Intra-plane Dist:", self.spin_intra)
         l_mesh.addRow("Max Inter-plane Dist:", self.spin_inter)
-        l_mesh.addRow(self.chk_polar)
-        l_mesh.addRow("Cutoff Latitude:", self.spin_polar_lat)
-
-        self.panel_delta = QWidget()
-        l_delta = QFormLayout(self.panel_delta)
-
-        self.spin_delta_lat = QDoubleSpinBox()
-        self.spin_delta_lat.setRange(0, 90)
-        self.spin_delta_lat.setValue(70.0)
-        self.spin_delta_lat.setSuffix(" °")
-        l_delta.addRow("Turnaround Latitude:", self.spin_delta_lat)
 
         layout.addWidget(self.panel_mesh)
-        layout.addWidget(self.panel_delta)
 
         self.combo_strat.currentIndexChanged.connect(self.update_panels)
         self.update_panels(current_strategy_idx)
@@ -132,7 +112,6 @@ class TopologyDialog(QDialog):
 
     def update_panels(self, idx: int) -> None:
         self.panel_mesh.setVisible(idx == 0)
-        self.panel_delta.setVisible(idx == 1)
 
 
 class ExportDialog(QDialog):
@@ -200,10 +179,13 @@ class RedisSettingsDialog(QDialog):
 
         self.txt_key_prefix = QLineEdit(str(self._config.get("key_prefix") or "link"))
 
-        self.spin_delay_scale = QDoubleSpinBox()
-        self.spin_delay_scale.setRange(0.000001, 1_000_000_000.0)
-        self.spin_delay_scale.setDecimals(6)
-        self.spin_delay_scale.setValue(float(self._config.get("delay_scale") or 1000.0))
+        self.chk_loss_enabled = QCheckBox("Enable Loss Query")
+        self.chk_loss_enabled.setChecked(bool(self._config.get("loss_enabled", False)))
+
+        self.spin_loss_scale = QDoubleSpinBox()
+        self.spin_loss_scale.setRange(0.000001, 1_000_000_000.0)
+        self.spin_loss_scale.setDecimals(6)
+        self.spin_loss_scale.setValue(float(self._config.get("loss_scale") or 1.0))
 
         self.spin_socket_timeout = QDoubleSpinBox()
         self.spin_socket_timeout.setRange(0.01, 60.0)
@@ -216,7 +198,8 @@ class RedisSettingsDialog(QDialog):
         redis_layout.addRow("Redis DB:", self.spin_db)
         redis_layout.addRow("Redis Password:", self.txt_password)
         redis_layout.addRow("Key Prefix:", self.txt_key_prefix)
-        redis_layout.addRow("Delay Scale:", self.spin_delay_scale)
+        redis_layout.addRow(self.chk_loss_enabled)
+        redis_layout.addRow("Loss Scale:", self.spin_loss_scale)
         redis_layout.addRow("Socket Timeout:", self.spin_socket_timeout)
 
         layout.addWidget(redis_group)
@@ -314,7 +297,8 @@ class RedisSettingsDialog(QDialog):
             "password": self._clean_text(self.txt_password),
             "db": self.spin_db.value(),
             "key_prefix": self.txt_key_prefix.text().strip() or "link",
-            "delay_scale": self.spin_delay_scale.value(),
+            "loss_enabled": self.chk_loss_enabled.isChecked(),
+            "loss_scale": self.spin_loss_scale.value(),
             "socket_timeout": self.spin_socket_timeout.value(),
             "use_ssh": self.chk_use_ssh.isChecked(),
             "ssh_host": self._clean_text(self.txt_ssh_host),

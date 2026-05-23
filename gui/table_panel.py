@@ -1,6 +1,6 @@
 """Reusable widget that owns the link table, filter box, stats label, and pagination."""
 
-from typing import List, Set
+from typing import List, Optional, Set
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
@@ -32,9 +32,13 @@ class LinkTablePanel(QWidget):
         self.page_size = page_size
         self.current_page = 1
         self.records: List[LinkRecord] = []
+        self.active_count: Optional[int] = None
         self.selected_link_pairs: Set[LinkKey] = set()
         self.redis_in_flight = False
         self.redis_last_error = ""
+        self._filter_cache_query = ""
+        self._filter_cache_records_id = 0
+        self._filter_cache_result: List[LinkRecord] = []
 
         self._init_ui()
 
@@ -76,6 +80,7 @@ class LinkTablePanel(QWidget):
 
         table.setItemDelegateForColumn(3, LatencyDelegate(25.0, table))
         table.setItemDelegateForColumn(4, RatioDelegate(200.0, table))
+        table.setItemDelegateForColumn(5, RatioDelegate(100.0, table))
 
         table.setSelectionBehavior(QTableWidget.SelectRows)
         table.setSelectionMode(QTableWidget.ExtendedSelection)
@@ -106,10 +111,12 @@ class LinkTablePanel(QWidget):
 
     def reset(self) -> None:
         self.records = []
+        self.active_count = None
         self.selected_link_pairs.clear()
         self.current_page = 1
         self.redis_in_flight = False
         self.redis_last_error = ""
+        self._invalidate_filter_cache()
         self.refresh()
 
     def set_records(
@@ -118,8 +125,12 @@ class LinkTablePanel(QWidget):
         *,
         redis_in_flight: bool = False,
         redis_last_error: str = "",
+        active_count: Optional[int] = None,
     ) -> None:
+        if self.records is not records:
+            self._invalidate_filter_cache()
         self.records = records
+        self.active_count = active_count
         self.redis_in_flight = redis_in_flight
         self.redis_last_error = redis_last_error
         self.refresh()
@@ -132,10 +143,22 @@ class LinkTablePanel(QWidget):
         self.current_page = 1
         self.refresh()
 
+    def _invalidate_filter_cache(self) -> None:
+        self._filter_cache_query = ""
+        self._filter_cache_records_id = 0
+        self._filter_cache_result = []
+
     def _filtered_records(self) -> List[LinkRecord]:
         query = self.txt_search.text().strip().lower()
         if not query:
             return self.records
+
+        records_id = id(self.records)
+        if (
+            query == self._filter_cache_query
+            and records_id == self._filter_cache_records_id
+        ):
+            return self._filter_cache_result
 
         result: List[LinkRecord] = []
         for record in self.records:
@@ -147,6 +170,9 @@ class LinkTablePanel(QWidget):
             if query in src_name or query in tgt_name or query in forward or query in reverse:
                 result.append(record)
 
+        self._filter_cache_query = query
+        self._filter_cache_records_id = records_id
+        self._filter_cache_result = result
         return result
 
     def refresh(self) -> None:
@@ -186,7 +212,11 @@ class LinkTablePanel(QWidget):
             self.table.blockSignals(False)
 
     def _stats_text(self) -> str:
-        active_count = sum(1 for record in self.records if not is_down(record.get("latency")))
+        active_count = (
+            self.active_count
+            if self.active_count is not None
+            else sum(1 for record in self.records if not is_down(record.get("latency")))
+        )
         total_count = len(self.records)
         redis_suffix = ""
         if self.redis_last_error:
@@ -208,12 +238,13 @@ class LinkTablePanel(QWidget):
             record["src_name"],
             record["tgt_name"],
             record.get("latency", DOWN),
-            record.get("redis_ratio_pct", DOWN),
+            record.get("redis_cal_pct", DOWN),
+            record.get("redis_loss_pct", DOWN),
         ]
 
         for col, value in enumerate(values):
             item = self.table.item(row, col)
-            if col in (0, 3, 4):
+            if col in (0, 3, 4, 5):
                 if item.data(Qt.EditRole) != value:
                     item.setData(Qt.EditRole, value)
             else:
@@ -227,8 +258,11 @@ class LinkTablePanel(QWidget):
     def _on_table_selection(self) -> None:
         selected: Set[LinkKey] = set()
 
-        for item in self.table.selectedItems():
-            row = item.row()
+        selected_rows = set()
+        for selected_range in self.table.selectedRanges():
+            selected_rows.update(range(selected_range.topRow(), selected_range.bottomRow() + 1))
+
+        for row in selected_rows:
             src_item = self.table.item(row, 1)
             tgt_item = self.table.item(row, 2)
             if src_item is None or tgt_item is None:

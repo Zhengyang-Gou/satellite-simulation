@@ -12,7 +12,6 @@ class DataExporter:
         self.start_time_ref = None
         self.end_time_ref = None
         self.step_counter = 0
-        
         # 时序数据缓存字典
         self.fixed_neighbors = {} # 格式: { sat_idx: [n1_idx, n2_idx, n3_idx, n4_idx] }
         self.sat_history = {}     # 格式: { sat_idx: ["0 down down 12.34 down", ...] }

@@ -27,8 +27,8 @@ class RedisQueryWorker(QObject):
     @Slot(int, object, object)
     def query(self, query_id: int, active_links: List[LinkRecord], satellites: List[Any]) -> None:
         try:
-            delay_map = self._provider().get_latest_delay_many(active_links, satellites)
-            self.result_ready.emit(query_id, delay_map)
+            metrics = self._provider().get_latest_link_metrics_many(active_links, satellites)
+            self.result_ready.emit(query_id, metrics)
         except Exception as exc:  # Redis/SSH errors should never block or crash the UI.
             self.error.emit(query_id, str(exc))
 

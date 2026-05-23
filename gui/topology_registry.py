@@ -1,6 +1,6 @@
 """Topology registry: stable full-link table plus per-frame link state updates."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 from core.strategies import GridDeltaStrategy
 
@@ -9,6 +9,8 @@ from .theme import DOWN
 
 
 class TopologyRegistry:
+    REDIS_SMOOTHING = 0.22
+
     """
     Keeps a stable table of theoretically possible links.
 
@@ -19,11 +21,15 @@ class TopologyRegistry:
     def __init__(self):
         self.link_registry: Dict[LinkKey, LinkRecord] = {}
         self.all_links_data: List[LinkRecord] = []
+        self.active_link_keys: Set[LinkKey] = set()
+        self.active_count = 0
         self.is_locked = False
 
     def reset(self, strategy: Any) -> None:
         self.link_registry.clear()
         self.all_links_data.clear()
+        self.active_link_keys.clear()
+        self.active_count = 0
         self.is_locked = False
 
         if isinstance(strategy, GridDeltaStrategy):
@@ -38,6 +44,8 @@ class TopologyRegistry:
     def build(self, strategy: Any, satellites: List[Any]) -> None:
         """Build the complete theoretical topology for the current strategy."""
         self.link_registry.clear()
+        self.active_link_keys.clear()
+        self.active_count = 0
 
         if not satellites:
             self.all_links_data = []
@@ -74,18 +82,15 @@ class TopologyRegistry:
     def _compute_all_possible_star_links(self, strategy: Any, satellites: List[Any]) -> List[LinkRecord]:
         old_intra = strategy.max_intra
         old_inter = strategy.max_inter
-        old_polar = strategy.enable_polar_cut
 
         try:
             strategy.max_intra = 999999
             strategy.max_inter = 999999
-            strategy.enable_polar_cut = False
             _isl, all_links = strategy.compute_links(satellites)
             return all_links
         finally:
             strategy.max_intra = old_intra
             strategy.max_inter = old_inter
-            strategy.enable_polar_cut = old_polar
 
     def _new_link_record(self, src: int, tgt: int, satellites: List[Any]) -> LinkRecord:
         return {
@@ -94,8 +99,10 @@ class TopologyRegistry:
             "src_name": satellites[src].name,
             "tgt_name": satellites[tgt].name,
             "latency": DOWN,
-            "redis_delay_ms": DOWN,
-            "redis_ratio_pct": DOWN,
+            "redis_cal_pct": DOWN,
+            "redis_loss_pct": DOWN,
+            "_redis_cal_target": DOWN,
+            "_redis_loss_target": DOWN,
         }
 
     def apply_active_links(self, active_links: List[LinkRecord]) -> None:
@@ -108,48 +115,88 @@ class TopologyRegistry:
                 continue
 
             record["latency"] = active["latency"]
+            self._advance_redis_display(record)
             current_active_keys.add(key)
 
-        for key, record in self.link_registry.items():
-            if key not in current_active_keys:
-                record["latency"] = DOWN
-                record["redis_delay_ms"] = DOWN
-                record["redis_ratio_pct"] = DOWN
+        for key in self.active_link_keys - current_active_keys:
+            record = self.link_registry.get(key)
+            if record is None:
+                continue
+
+            record["latency"] = DOWN
+            record["redis_cal_pct"] = DOWN
+            record["redis_loss_pct"] = DOWN
+            record["_redis_cal_target"] = DOWN
+            record["_redis_loss_target"] = DOWN
+
+        self.active_link_keys = current_active_keys
+        self.active_count = len(current_active_keys)
+
+    def _advance_redis_display(self, record: LinkRecord) -> None:
+        record["redis_cal_pct"] = self._smooth_metric(
+            record.get("redis_cal_pct", DOWN),
+            record.get("_redis_cal_target", DOWN),
+        )
+        record["redis_loss_pct"] = self._smooth_metric(
+            record.get("redis_loss_pct", DOWN),
+            record.get("_redis_loss_target", DOWN),
+        )
 
     def active_for_redis(self) -> List[LinkRecord]:
         return [
-            {"src": d["src"], "tgt": d["tgt"], "latency": d.get("latency", DOWN)}
-            for d in self.link_registry.values()
-            if not is_down(d.get("latency"))
+            {"src": record["src"], "tgt": record["tgt"]}
+            for key in self.active_link_keys
+            if (record := self.link_registry.get(key)) is not None
+            and not is_down(record.get("latency"))
         ]
 
-    def apply_redis_delays(self, redis_delay_map: Dict[LinkKey, Any]) -> None:
-        for record in self.link_registry.values():
-            calc_latency = record.get("latency", DOWN)
-            if is_down(calc_latency):
-                record["redis_delay_ms"] = DOWN
-                record["redis_ratio_pct"] = DOWN
+    def apply_redis_cal(self, redis_cal_map: Dict[LinkKey, Any]) -> None:
+        for key in self.active_link_keys:
+            record = self.link_registry.get(key)
+            if record is None:
                 continue
 
-            redis_delay = redis_delay_map.get((record["src"], record["tgt"]), DOWN)
-            record["redis_delay_ms"] = redis_delay
-
-            if is_down(redis_delay):
-                record["redis_ratio_pct"] = DOWN
+            if is_down(record.get("latency", DOWN)):
+                record["redis_cal_pct"] = DOWN
+                record["redis_loss_pct"] = DOWN
                 continue
 
-            try:
-                calc_latency_f = float(calc_latency)
-                redis_delay_f = float(redis_delay)
-                record["redis_ratio_pct"] = (
-                    round((redis_delay_f / calc_latency_f) * 100.0, 2)
-                    if calc_latency_f > 0
-                    else DOWN
-                )
-            except (TypeError, ValueError, ZeroDivisionError):
-                record["redis_ratio_pct"] = DOWN
+            target = redis_cal_map.get((record["src"], record["tgt"]), DOWN)
+            record["_redis_cal_target"] = target
+            record["redis_cal_pct"] = self._smooth_metric(record.get("redis_cal_pct", DOWN), target)
+
+    def apply_redis_loss(self, redis_loss_map: Dict[LinkKey, Any]) -> None:
+        for key in self.active_link_keys:
+            record = self.link_registry.get(key)
+            if record is None:
+                continue
+
+            if is_down(record.get("latency", DOWN)):
+                record["redis_loss_pct"] = DOWN
+                continue
+
+            target = redis_loss_map.get((record["src"], record["tgt"]), DOWN)
+            record["_redis_loss_target"] = target
+            record["redis_loss_pct"] = self._smooth_metric(record.get("redis_loss_pct", DOWN), target)
+
+    def _smooth_metric(self, current: Any, target: Any) -> Any:
+        if is_down(target):
+            return DOWN
+        if is_down(current):
+            return target
+
+        try:
+            current_f = float(current)
+            target_f = float(target)
+        except (TypeError, ValueError):
+            return target
+
+        value = current_f + (target_f - current_f) * self.REDIS_SMOOTHING
+        return round(value, 4)
 
     def mark_redis_down(self) -> None:
         for record in self.link_registry.values():
-            record["redis_delay_ms"] = DOWN
-            record["redis_ratio_pct"] = DOWN
+            record["redis_cal_pct"] = DOWN
+            record["redis_loss_pct"] = DOWN
+            record["_redis_cal_target"] = DOWN
+            record["_redis_loss_target"] = DOWN

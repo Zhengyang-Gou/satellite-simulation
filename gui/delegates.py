@@ -11,7 +11,7 @@ from .theme import DOWN
 
 
 class BarDelegate(QStyledItemDelegate):
-    """Shared bar renderer for latency and Redis/Calc percentage columns."""
+    """Shared bar renderer for latency and Redis percentage columns."""
 
     def __init__(self, max_value: float, suffix: str, decimals: int, parent: Optional[QObject] = None):
         super().__init__(parent)

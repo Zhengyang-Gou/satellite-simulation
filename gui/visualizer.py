@@ -19,6 +19,8 @@ class Visualizer(QWidget):
         self.cached_sat_pos = np.empty((0, 3), dtype=np.float64)
         self.cached_isl = np.empty((0,), dtype=np.int64)
         self.cached_path_lines = np.empty((0,), dtype=np.int64)
+        self.rendered_isl = np.empty((0,), dtype=np.int64)
+        self.rendered_path_lines = np.empty((0,), dtype=np.int64)
 
         self.sat_actor = None
         self.isl_actor = None
@@ -134,6 +136,64 @@ class Visualizer(QWidget):
 
         setattr(self, actor_name, None)
 
+    def _build_line_mesh(self, points: np.ndarray, lines: np.ndarray) -> pv.PolyData:
+        return pv.PolyData(points, lines=np.ascontiguousarray(lines, dtype=np.int64))
+
+    def _same_line_topology(self, left: np.ndarray, right: np.ndarray) -> bool:
+        if left.shape != right.shape:
+            return False
+        if np.array_equal(left, right):
+            return True
+
+        left_pairs = np.sort(left.reshape((-1, 3))[:, 1:3], axis=1)
+        right_pairs = np.sort(right.reshape((-1, 3))[:, 1:3], axis=1)
+        left_order = np.lexsort((left_pairs[:, 1], left_pairs[:, 0]))
+        right_order = np.lexsort((right_pairs[:, 1], right_pairs[:, 0]))
+        return np.array_equal(left_pairs[left_order], right_pairs[right_order])
+
+    def _update_line_actor(
+        self,
+        actor_name: str,
+        rendered_lines_name: str,
+        points: np.ndarray,
+        lines: np.ndarray,
+        color: str,
+        line_width: int,
+        opacity: float = 1.0,
+    ) -> None:
+        if len(lines) == 0:
+            self._remove_actor(actor_name)
+            setattr(self, rendered_lines_name, np.empty((0,), dtype=np.int64))
+            return
+
+        actor = getattr(self, actor_name)
+        rendered_lines = getattr(self, rendered_lines_name)
+
+        if actor is not None and self._same_line_topology(rendered_lines, lines):
+            try:
+                dataset = actor.mapper.dataset
+                if len(dataset.points) == len(points):
+                    dataset.points = points
+                    dataset.Modified()
+                    actor.mapper.Modified()
+                    return
+            except Exception:
+                pass
+
+        self._remove_actor(actor_name)
+        mesh = self._build_line_mesh(points, lines)
+        actor = self.plotter.add_mesh(
+            mesh,
+            color=color,
+            line_width=line_width,
+            opacity=opacity,
+            render_lines_as_tubes=True,
+            lighting=False,
+        )
+        setattr(self, actor_name, actor)
+        setattr(self, rendered_lines_name, lines.copy())
+        self.plotter.reset_camera_clipping_range()
+
     def _render_frame(self) -> None:
         if len(self.cached_sat_pos) == 0:
             return
@@ -173,43 +233,30 @@ class Visualizer(QWidget):
         Important:
         Do not update dataset.lines in-place here. In some PyVista/VTK versions,
         changing the line cell array in-place does not reliably refresh the actor.
-        Rebuilding the line actor is more stable.
+        Rebuild only when the topology changes; otherwise update points in-place
+        to avoid visible flicker.
         """
-        if len(self.cached_isl) == 0:
-            self._remove_actor("isl_actor")
-            return
-
-        self._remove_actor("isl_actor")
-
-        mesh = pv.PolyData(sats)
-        mesh.lines = self.cached_isl
-
-        self.isl_actor = self.plotter.add_mesh(
-            mesh,
-            color="#00AAFF",
-            line_width=2,
+        self._update_line_actor(
+            "isl_actor",
+            "rendered_isl",
+            sats,
+            self.cached_isl,
+            color="#00CC66",
+            line_width=3,
             opacity=0.85,
-            render_lines_as_tubes=True,
         )
 
     def _render_highlight_links(self, sats: np.ndarray) -> None:
         """
         Render selected/highlighted links.
 
-        This is also rebuilt each frame for the same reason as normal ISL links.
+        This follows the same topology-change rebuild rule as normal ISL links.
         """
-        if len(self.cached_path_lines) == 0:
-            self._remove_actor("path_actor")
-            return
-
-        self._remove_actor("path_actor")
-
-        mesh_path = pv.PolyData(sats)
-        mesh_path.lines = self.cached_path_lines
-
-        self.path_actor = self.plotter.add_mesh(
-            mesh_path,
+        self._update_line_actor(
+            "path_actor",
+            "rendered_path_lines",
+            sats,
+            self.cached_path_lines,
             color="#FFD700",
             line_width=6,
-            render_lines_as_tubes=True,
         )

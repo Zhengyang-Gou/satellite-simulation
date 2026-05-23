@@ -15,4 +15,4 @@ QPushButton:hover { background-color: #4c4c4c; }
 """
 
 DOWN = "down"
-TABLE_HEADERS = ["Link ID", "Source", "Target", "Latency (ms)", "Redis / Calc (%)"]
+TABLE_HEADERS = ["Link ID", "Source", "Target", "Latency (ms)", "Redis / Cal (%)", "Redis Loss (%)"]
