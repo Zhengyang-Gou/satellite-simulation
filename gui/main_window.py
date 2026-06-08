@@ -6,21 +6,30 @@ from typing import Any, Dict, List, Optional, Set
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QInputDialog,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 from core.calculator import OrbitCalculator
 from core.exporter import DataExporter
-from core.strategies import GridDeltaStrategy, GridStarStrategy
+from core.link_dataset_exporter import LinkDatasetExportCancelled, LinkDatasetExporter
+from core.strategies import GridDeltaStrategy
 
 from .config import env_int, redis_config_from_env
-from .dialogs import ExportDialog, RedisSettingsDialog, TopologyDialog, WalkerDialog
+from .dialogs import (
+    ExportDialog,
+    LinkDatasetExportDialog,
+    RedisSettingsDialog,
+    TopologyDialog,
+    WalkerDialog,
+)
 from .link_state import LinkKey, link_pairs_to_lines, satellite_positions_array
 from .redis_worker import RedisQueryWorker
 from .table_panel import LinkTablePanel
@@ -41,8 +50,7 @@ class MainWindow(QMainWindow):
 
         self.calculator = OrbitCalculator()
         self.exporter = DataExporter()
-        self.strategy = GridStarStrategy()
-        self.strategy_idx = 0
+        self.strategy = GridDeltaStrategy()
         self.registry = TopologyRegistry()
 
         self.redis_config = redis_config_from_env()
@@ -62,6 +70,7 @@ class MainWindow(QMainWindow):
         self.is_playing = False
         self.current_time = datetime.utcnow()
         self.selected_link_pairs: Set[LinkKey] = set()
+        self.current_walker_config: Optional[Dict[str, Any]] = None
 
         self._init_ui()
         self._init_menu()
@@ -143,6 +152,7 @@ class MainWindow(QMainWindow):
         m_sim.addAction("Set Step Size...", self.open_step_settings)
         m_sim.addSeparator()
         m_sim.addAction("Export Simulation Data...", self.open_export_settings)
+        m_sim.addAction("Export Link State Dataset...", self.open_link_dataset_export)
 
         m_redis = mb.addMenu("Redis")
 
@@ -237,6 +247,9 @@ class MainWindow(QMainWindow):
 
         total = dlg.spin_t.value()
         planes = dlg.spin_p.value()
+        phase_factor = dlg.spin_f.value()
+        altitude_km = dlg.spin_alt.value()
+        inclination_deg = dlg.spin_inc.value()
 
         if total % planes != 0:
             QMessageBox.warning(
@@ -249,32 +262,39 @@ class MainWindow(QMainWindow):
         count = self.calculator.generate_walker(
             total,
             planes,
-            dlg.spin_f.value(),
-            dlg.spin_alt.value(),
-            dlg.spin_inc.value(),
+            phase_factor,
+            altitude_km,
+            inclination_deg,
             self.current_time,
         )
 
         if count:
+            self.current_walker_config = {
+                "total": total,
+                "orbit_num": planes,
+                "sat_per_orbit": total // planes,
+                "phase_factor": phase_factor,
+                "altitude_km": altitude_km,
+                "inclination_deg": inclination_deg,
+                "epoch_time": self.current_time,
+            }
             self.reset_simulation_state()
             self.act_play.setEnabled(True)
             self.loop(advance=False)
 
     def open_topology_settings(self) -> None:
-        dlg = TopologyDialog(self.strategy_idx, self)
+        dlg = TopologyDialog(
+            latitude_fuse_enabled=getattr(self.strategy, "latitude_fuse_enabled", False),
+            latitude_threshold=getattr(self.strategy, "latitude_threshold", 70.0),
+            parent=self,
+        )
         if dlg.exec() != QDialog.Accepted:
             return
 
-        self.strategy_idx = dlg.combo_strat.currentIndex()
-
-        if self.strategy_idx == 0:
-            self.strategy = GridStarStrategy(
-                plane_tolerance=dlg.spin_plane_tol.value(),
-                max_intra_dist=dlg.spin_intra.value(),
-                max_inter_dist=dlg.spin_inter.value(),
-            )
-        else:
-            self.strategy = GridDeltaStrategy()
+        self.strategy = GridDeltaStrategy(
+            latitude_fuse_enabled=dlg.chk_latitude_fuse.isChecked(),
+            latitude_threshold=dlg.spin_latitude_threshold.value(),
+        )
 
         self.reset_simulation_state()
         if self.calculator.satellites:
@@ -304,6 +324,109 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Export", message)
 
+    def open_link_dataset_export(self) -> None:
+        export_error = self._walker_dataset_export_error()
+        if export_error:
+            QMessageBox.warning(
+                self,
+                "Export Dataset",
+                export_error,
+            )
+            return
+
+        dlg = LinkDatasetExportDialog(self.current_walker_config, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        config = dlg.config()
+        if not config["output_dir"]:
+            QMessageBox.warning(self, "Export Dataset", "Please select an output directory.")
+            return
+
+        progress = QProgressDialog(
+            "Generating link state dataset...",
+            "Cancel",
+            0,
+            config["time_slices"],
+            self,
+        )
+        progress.setWindowTitle("Export Link State Dataset")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        def report_progress(done: int, total: int) -> bool:
+            progress.setMaximum(total)
+            progress.setValue(done)
+            QApplication.processEvents()
+            return not progress.wasCanceled()
+
+        try:
+            result = LinkDatasetExporter().export(
+                orbit_num=self.current_walker_config["orbit_num"],
+                sat_per_orbit=self.current_walker_config["sat_per_orbit"],
+                time_slices=config["time_slices"],
+                duration_sec=config["duration_sec"],
+                output_dir=config["output_dir"],
+                phase_factor=self.current_walker_config["phase_factor"],
+                altitude_km=self.current_walker_config["altitude_km"],
+                inclination_deg=self.current_walker_config["inclination_deg"],
+                random_failure_enabled=config["random_failure_enabled"],
+                failure_probability=config["failure_probability"],
+                random_seed=config["random_seed"],
+                strategy=self._clone_strategy(),
+                start_time=self.current_time,
+                epoch_time=self.current_walker_config["epoch_time"],
+                progress_callback=report_progress,
+            )
+        except LinkDatasetExportCancelled:
+            QMessageBox.information(self, "Export Dataset", "Export cancelled.")
+            return
+        except Exception as exc:
+            QMessageBox.warning(self, "Export Dataset", f"Export failed:\n{exc}")
+            return
+        finally:
+            progress.close()
+
+        QMessageBox.information(
+            self,
+            "Export Dataset",
+            (
+                f"Generated {result.file_count} satellite files "
+                f"with {result.time_slices} time slices.\n\n{result.output_dir}"
+            ),
+        )
+
+    def _has_walker_constellation(self) -> bool:
+        return bool(
+            self.calculator.satellites
+            and getattr(self.calculator.satellites[0], "is_walker", False)
+        )
+
+    def _walker_dataset_export_error(self) -> str:
+        if not self.current_walker_config or not self._has_walker_constellation():
+            return "Please generate a Walker constellation before exporting a link state dataset."
+
+        orbit_num = self.current_walker_config["orbit_num"]
+        sat_per_orbit = self.current_walker_config["sat_per_orbit"]
+        if orbit_num < 3 or sat_per_orbit < 3:
+            return (
+                "The generated Walker constellation must have at least 3 orbits "
+                "and at least 3 satellites per orbit for this dataset format."
+            )
+        if orbit_num > 99 or sat_per_orbit > 99:
+            return (
+                "The generated Walker constellation must have at most 99 orbits "
+                "and at most 99 satellites per orbit for two-digit satellite IDs."
+            )
+        return ""
+
+    def _clone_strategy(self):
+        return GridDeltaStrategy(
+            latitude_fuse_enabled=getattr(self.strategy, "latitude_fuse_enabled", False),
+            latitude_threshold=getattr(self.strategy, "latitude_threshold", 70.0),
+        )
+
     def load_tle_file(self) -> None:
         file_path, _ = QFileDialog.getOpenFileName(self, "Open TLE", "", "Files (*.txt *.tle)")
         if not file_path:
@@ -320,6 +443,7 @@ class MainWindow(QMainWindow):
             return
 
         if count:
+            self.current_walker_config = None
             self.reset_simulation_state()
             self.act_play.setEnabled(True)
             self.loop(advance=False)

@@ -6,7 +6,6 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -65,53 +64,40 @@ class WalkerDialog(QDialog):
 
 
 class TopologyDialog(QDialog):
-    def __init__(self, current_strategy_idx: int, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        latitude_fuse_enabled: bool = False,
+        latitude_threshold: float = 70.0,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Network Topology Settings")
         self.setMinimumWidth(350)
 
         layout = QVBoxLayout(self)
 
-        self.combo_strat = QComboBox()
-        self.combo_strat.addItems(["+Grid（Star）", "+Grid（Delta）"])
-        self.combo_strat.setCurrentIndex(current_strategy_idx)
+        layout.addWidget(QLabel("Connection Strategy: +Grid（Delta）"))
 
-        layout.addWidget(QLabel("Connection Strategy:"))
-        layout.addWidget(self.combo_strat)
+        delta_group = QGroupBox("Delta")
+        delta_layout = QFormLayout(delta_group)
 
-        self.panel_mesh = QWidget()
-        l_mesh = QFormLayout(self.panel_mesh)
+        self.chk_latitude_fuse = QCheckBox("Enable Latitude Fuse")
+        self.chk_latitude_fuse.setChecked(latitude_fuse_enabled)
 
-        self.spin_plane_tol = QDoubleSpinBox()
-        self.spin_plane_tol.setValue(6.0)
-        self.spin_plane_tol.setSuffix(" °")
+        self.spin_latitude_threshold = QDoubleSpinBox()
+        self.spin_latitude_threshold.setRange(0.0, 90.0)
+        self.spin_latitude_threshold.setDecimals(1)
+        self.spin_latitude_threshold.setValue(latitude_threshold)
+        self.spin_latitude_threshold.setSuffix(" °")
 
-        self.spin_intra = QSpinBox()
-        self.spin_intra.setRange(0, 10000)
-        self.spin_intra.setValue(5000)
-        self.spin_intra.setSuffix(" km")
-
-        self.spin_inter = QSpinBox()
-        self.spin_inter.setRange(0, 10000)
-        self.spin_inter.setValue(5000)
-        self.spin_inter.setSuffix(" km")
-
-        l_mesh.addRow("Plane Tolerance:", self.spin_plane_tol)
-        l_mesh.addRow("Max Intra-plane Dist:", self.spin_intra)
-        l_mesh.addRow("Max Inter-plane Dist:", self.spin_inter)
-
-        layout.addWidget(self.panel_mesh)
-
-        self.combo_strat.currentIndexChanged.connect(self.update_panels)
-        self.update_panels(current_strategy_idx)
+        delta_layout.addRow(self.chk_latitude_fuse)
+        delta_layout.addRow("Latitude Threshold:", self.spin_latitude_threshold)
+        layout.addWidget(delta_group)
 
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
-
-    def update_panels(self, idx: int) -> None:
-        self.panel_mesh.setVisible(idx == 0)
 
 
 class ExportDialog(QDialog):
@@ -144,6 +130,117 @@ class ExportDialog(QDialog):
         if directory:
             self.path = directory
             self.lbl_path.setText(os.path.basename(directory) or directory)
+
+
+class LinkDatasetExportDialog(QDialog):
+    def __init__(self, constellation_config: Dict[str, Any], parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("Export Link State Dataset")
+        self.setMinimumWidth(460)
+        self.path = ""
+        self.constellation_config = dict(constellation_config)
+
+        layout = QVBoxLayout(self)
+
+        constellation_group = QGroupBox("Constellation")
+        constellation_layout = QFormLayout(constellation_group)
+
+        constellation_layout.addRow(
+            "Total Satellites (T):",
+            QLabel(str(self.constellation_config["total"])),
+        )
+        constellation_layout.addRow(
+            "Orbit Num:",
+            QLabel(str(self.constellation_config["orbit_num"])),
+        )
+        constellation_layout.addRow(
+            "Satellites Per Orbit:",
+            QLabel(str(self.constellation_config["sat_per_orbit"])),
+        )
+        constellation_layout.addRow(
+            "Phase Factor (F):",
+            QLabel(str(self.constellation_config["phase_factor"])),
+        )
+        constellation_layout.addRow(
+            "Altitude:",
+            QLabel(f"{self.constellation_config['altitude_km']:.1f} km"),
+        )
+        constellation_layout.addRow(
+            "Inclination:",
+            QLabel(f"{self.constellation_config['inclination_deg']:.1f} °"),
+        )
+        layout.addWidget(constellation_group)
+
+        simulation_group = QGroupBox("Simulation")
+        simulation_layout = QFormLayout(simulation_group)
+
+        self.spin_time_slices = QSpinBox()
+        self.spin_time_slices.setRange(1, 1_000_000)
+        self.spin_time_slices.setValue(6000)
+
+        self.spin_duration = QDoubleSpinBox()
+        self.spin_duration.setRange(0.1, 31_536_000.0)
+        self.spin_duration.setDecimals(1)
+        self.spin_duration.setValue(6000.0)
+        self.spin_duration.setSuffix(" s")
+
+        simulation_layout.addRow("Time Slices:", self.spin_time_slices)
+        simulation_layout.addRow("Simulation Duration:", self.spin_duration)
+        layout.addWidget(simulation_group)
+
+        failure_group = QGroupBox("Random Link Failure")
+        failure_layout = QFormLayout(failure_group)
+
+        self.chk_random_failure = QCheckBox("Enable Random Link Failure")
+
+        self.spin_failure_probability = QDoubleSpinBox()
+        self.spin_failure_probability.setRange(0.0, 1.0)
+        self.spin_failure_probability.setDecimals(6)
+        self.spin_failure_probability.setSingleStep(0.01)
+        self.spin_failure_probability.setValue(0.01)
+
+        self.spin_random_seed = QSpinBox()
+        self.spin_random_seed.setRange(0, 2_147_483_647)
+        self.spin_random_seed.setValue(42)
+
+        failure_layout.addRow(self.chk_random_failure)
+        failure_layout.addRow("Down Probability / Slice:", self.spin_failure_probability)
+        failure_layout.addRow("Random Seed:", self.spin_random_seed)
+        layout.addWidget(failure_group)
+
+        output_group = QGroupBox("Output")
+        output_layout = QFormLayout(output_group)
+
+        self.btn_path = QPushButton("Select Directory...")
+        self.btn_path.clicked.connect(self._select_directory)
+
+        self.lbl_path = QLabel("Not Selected")
+        self.lbl_path.setWordWrap(True)
+
+        output_layout.addRow("Save To:", self.btn_path)
+        output_layout.addRow("", self.lbl_path)
+        layout.addWidget(output_group)
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+    def _select_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self)
+        if directory:
+            self.path = directory
+            self.lbl_path.setText(directory)
+
+    def config(self) -> Dict[str, Any]:
+        return {
+            "time_slices": self.spin_time_slices.value(),
+            "duration_sec": self.spin_duration.value(),
+            "random_failure_enabled": self.chk_random_failure.isChecked(),
+            "failure_probability": self.spin_failure_probability.value(),
+            "random_seed": self.spin_random_seed.value(),
+            "output_dir": self.path,
+        }
 
 
 class RedisSettingsDialog(QDialog):

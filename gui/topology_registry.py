@@ -51,10 +51,7 @@ class TopologyRegistry:
             self.all_links_data = []
             return
 
-        if isinstance(strategy, GridDeltaStrategy):
-            self._build_delta_registry(strategy, satellites)
-        else:
-            self._build_star_registry(strategy, satellites)
+        self._build_delta_registry(strategy, satellites)
 
         self.all_links_data = sorted(self.link_registry.values(), key=lambda x: (x["src_name"], x["tgt_name"]))
         for idx, record in enumerate(self.all_links_data, start=1):
@@ -69,28 +66,6 @@ class TopologyRegistry:
 
         for _edge_type, src, tgt in strategy.static_edges:
             self.link_registry[link_key(src, tgt)] = self._new_link_record(src, tgt, satellites)
-
-    def _build_star_registry(self, strategy: Any, satellites: List[Any]) -> None:
-        all_links = self._compute_all_possible_star_links(strategy, satellites)
-        for record in all_links:
-            self.link_registry[link_key(record["src"], record["tgt"])] = self._new_link_record(
-                record["src"],
-                record["tgt"],
-                satellites,
-            )
-
-    def _compute_all_possible_star_links(self, strategy: Any, satellites: List[Any]) -> List[LinkRecord]:
-        old_intra = strategy.max_intra
-        old_inter = strategy.max_inter
-
-        try:
-            strategy.max_intra = 999999
-            strategy.max_inter = 999999
-            _isl, all_links = strategy.compute_links(satellites)
-            return all_links
-        finally:
-            strategy.max_intra = old_intra
-            strategy.max_inter = old_inter
 
     def _new_link_record(self, src: int, tgt: int, satellites: List[Any]) -> LinkRecord:
         return {
