@@ -73,13 +73,13 @@ class RedisLatencyProvider:
 
     def _open_ssh_tunnel(self) -> Tuple[str, int]:
         if SSHTunnelForwarder is None:
-            raise RuntimeError("SSH mode requires package 'sshtunnel'. Install it with: pip install sshtunnel")
+            raise RuntimeError("SSH 模式需要安装 'sshtunnel' 包，可执行：pip install sshtunnel")
 
         if not self.ssh_host:
-            raise RuntimeError("SSH host is required when SSH tunnel is enabled")
+            raise RuntimeError("启用 SSH 隧道时必须填写 SSH 主机")
 
         if not self.ssh_username:
-            raise RuntimeError("SSH username is required when SSH tunnel is enabled")
+            raise RuntimeError("启用 SSH 隧道时必须填写 SSH 用户名")
 
         ssh_kwargs: Dict[str, Any] = {
             "ssh_username": self.ssh_username,
@@ -123,8 +123,8 @@ class RedisLatencyProvider:
                 self._connect()
             self.client.ping()
             if self.use_ssh:
-                return True, f"SSH tunnel OK, Redis OK: {self.ssh_host}:{self.ssh_port} -> {self.host}:{self.port}"
-            return True, f"Redis OK: {self.host}:{self.port}"
+                return True, f"SSH 隧道正常，Redis 正常：{self.ssh_host}:{self.ssh_port} -> {self.host}:{self.port}"
+            return True, f"Redis 正常：{self.host}:{self.port}"
         except Exception as exc:
             return False, str(exc)
 

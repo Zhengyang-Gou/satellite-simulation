@@ -44,6 +44,8 @@ class LinkTablePanel(QWidget):
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
         layout.addLayout(self._build_toolbar())
 
         self.table = self._create_table()
@@ -52,17 +54,27 @@ class LinkTablePanel(QWidget):
 
     def _build_toolbar(self) -> QHBoxLayout:
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
 
         self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("Filter Name or Link, e.g. 0101 or 0101-0102")
-        self.txt_search.setFixedWidth(360)
+        self.txt_search.setPlaceholderText("筛选链路，例如 0101 或 0101-0102")
+        self.txt_search.setMinimumWidth(320)
         self.txt_search.textChanged.connect(self._on_search_changed)
 
-        self.lbl_stats = QLabel("Active Links: 0")
+        self.lbl_active_chip = QLabel("活动 0")
+        self.lbl_active_chip.setObjectName("activeChip")
+
+        self.lbl_total_chip = QLabel("总数 0")
+        self.lbl_total_chip.setObjectName("metricChip")
+
+        self.lbl_redis_chip = QLabel("Redis 空闲")
+        self.lbl_redis_chip.setObjectName("redisChip")
 
         toolbar.addWidget(self.txt_search)
         toolbar.addStretch()
-        toolbar.addWidget(self.lbl_stats)
+        toolbar.addWidget(self.lbl_active_chip)
+        toolbar.addWidget(self.lbl_total_chip)
+        toolbar.addWidget(self.lbl_redis_chip)
         return toolbar
 
     def _create_table(self) -> QTableWidget:
@@ -75,7 +87,7 @@ class LinkTablePanel(QWidget):
         table.setAlternatingRowColors(True)
         table.setHorizontalHeaderLabels(TABLE_HEADERS)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.verticalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.verticalHeader().setDefaultSectionSize(38)
         table.verticalHeader().setVisible(False)
 
         table.setItemDelegateForColumn(3, LatencyDelegate(25.0, table))
@@ -93,13 +105,15 @@ class LinkTablePanel(QWidget):
 
     def _build_pagination_bar(self) -> QHBoxLayout:
         page_layout = QHBoxLayout()
+        page_layout.setSpacing(8)
 
-        self.btn_prev = QPushButton("◄ Prev")
+        self.btn_prev = QPushButton("上一页")
         self.btn_prev.clicked.connect(lambda: self.change_page(-1))
 
-        self.lbl_page = QLabel("Page 1 / 1")
+        self.lbl_page = QLabel("第 1 / 1 页")
+        self.lbl_page.setObjectName("metricChip")
 
-        self.btn_next = QPushButton("Next ►")
+        self.btn_next = QPushButton("下一页")
         self.btn_next.clicked.connect(lambda: self.change_page(1))
 
         page_layout.addStretch()
@@ -180,10 +194,10 @@ class LinkTablePanel(QWidget):
         total_pages = max(1, (len(filtered) + self.page_size - 1) // self.page_size)
         self.current_page = max(1, min(self.current_page, total_pages))
 
-        self.lbl_page.setText(f"Page {self.current_page} / {total_pages}")
+        self.lbl_page.setText(f"第 {self.current_page} / {total_pages} 页")
         self.btn_prev.setEnabled(self.current_page > 1)
         self.btn_next.setEnabled(self.current_page < total_pages)
-        self.lbl_stats.setText(self._stats_text())
+        self._update_summary_chips()
 
         start_idx = (self.current_page - 1) * self.page_size
         page_data = filtered[start_idx : start_idx + self.page_size]
@@ -211,19 +225,25 @@ class LinkTablePanel(QWidget):
             self.table.setUpdatesEnabled(True)
             self.table.blockSignals(False)
 
-    def _stats_text(self) -> str:
-        active_count = (
+    def _active_count(self) -> int:
+        return (
             self.active_count
             if self.active_count is not None
             else sum(1 for record in self.records if not is_down(record.get("latency")))
         )
+
+    def _update_summary_chips(self) -> None:
+        active_count = self._active_count()
         total_count = len(self.records)
-        redis_suffix = ""
+        self.lbl_active_chip.setText(f"活动 {active_count}")
+        self.lbl_total_chip.setText(f"总数 {total_count}")
+
         if self.redis_last_error:
-            redis_suffix = " | Redis: down"
+            self.lbl_redis_chip.setText("Redis 异常")
         elif self.redis_in_flight:
-            redis_suffix = " | Redis: updating"
-        return f"Active Links: {active_count} / {total_count}{redis_suffix}"
+            self.lbl_redis_chip.setText("Redis 更新中")
+        else:
+            self.lbl_redis_chip.setText("Redis 空闲")
 
     def _ensure_table_row(self, row: int) -> None:
         for col in range(len(TABLE_HEADERS)):

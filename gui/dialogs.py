@@ -1,6 +1,4 @@
 """Dialog classes used by MainWindow."""
-
-import os
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt
@@ -23,11 +21,41 @@ from PySide6.QtWidgets import (
 )
 
 
+def _configure_form_layout(layout: QFormLayout) -> None:
+    layout.setContentsMargins(18, 18, 18, 18)
+    layout.setHorizontalSpacing(14)
+    layout.setVerticalSpacing(10)
+    layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+
+def _configure_box_layout(layout: QVBoxLayout) -> None:
+    layout.setContentsMargins(18, 18, 18, 18)
+    layout.setSpacing(12)
+
+
+def _dialog_buttons(dialog: QDialog) -> QDialogButtonBox:
+    btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    ok_button = btns.button(QDialogButtonBox.Ok)
+    if ok_button is not None:
+        ok_button.setText("确定")
+        ok_button.setObjectName("primaryButton")
+        ok_button.setDefault(True)
+    cancel_button = btns.button(QDialogButtonBox.Cancel)
+    if cancel_button is not None:
+        cancel_button.setText("取消")
+    btns.accepted.connect(dialog.accept)
+    btns.rejected.connect(dialog.reject)
+    return btns
+
+
 class WalkerDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("Generate Walker Constellation")
+        self.setWindowTitle("生成 Walker 星座")
+        self.setMinimumWidth(480)
         layout = QFormLayout(self)
+        _configure_form_layout(layout)
 
         self.spin_t = QSpinBox()
         self.spin_t.setRange(1, 10000)
@@ -51,16 +79,13 @@ class WalkerDialog(QDialog):
         self.spin_inc.setValue(53.0)
         self.spin_inc.setSuffix(" °")
 
-        layout.addRow("Total Satellites (T):", self.spin_t)
-        layout.addRow("Orbital Planes (P):", self.spin_p)
-        layout.addRow("Phase Factor (F):", self.spin_f)
-        layout.addRow("Altitude:", self.spin_alt)
-        layout.addRow("Inclination:", self.spin_inc)
+        layout.addRow("卫星总数 (T)：", self.spin_t)
+        layout.addRow("轨道面数 (P)：", self.spin_p)
+        layout.addRow("相位因子 (F)：", self.spin_f)
+        layout.addRow("轨道高度：", self.spin_alt)
+        layout.addRow("轨道倾角：", self.spin_inc)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addRow(btns)
+        layout.addRow(_dialog_buttons(self))
 
 
 class TopologyDialog(QDialog):
@@ -71,17 +96,21 @@ class TopologyDialog(QDialog):
         parent: Optional[QWidget] = None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Network Topology Settings")
-        self.setMinimumWidth(350)
+        self.setWindowTitle("网络拓扑设置")
+        self.setMinimumWidth(480)
 
         layout = QVBoxLayout(self)
+        _configure_box_layout(layout)
 
-        layout.addWidget(QLabel("Connection Strategy: +Grid（Delta）"))
+        strategy_label = QLabel("连接策略：Grid Delta")
+        strategy_label.setObjectName("hintLabel")
+        layout.addWidget(strategy_label)
 
-        delta_group = QGroupBox("Delta")
+        delta_group = QGroupBox("Delta 拓扑")
         delta_layout = QFormLayout(delta_group)
+        _configure_form_layout(delta_layout)
 
-        self.chk_latitude_fuse = QCheckBox("Enable Latitude Fuse")
+        self.chk_latitude_fuse = QCheckBox("启用纬度熔断")
         self.chk_latitude_fuse.setChecked(latitude_fuse_enabled)
 
         self.spin_latitude_threshold = QDoubleSpinBox()
@@ -91,88 +120,56 @@ class TopologyDialog(QDialog):
         self.spin_latitude_threshold.setSuffix(" °")
 
         delta_layout.addRow(self.chk_latitude_fuse)
-        delta_layout.addRow("Latitude Threshold:", self.spin_latitude_threshold)
+        delta_layout.addRow("纬度阈值：", self.spin_latitude_threshold)
         layout.addWidget(delta_group)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-
-
-class ExportDialog(QDialog):
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("Export Data Settings")
-        layout = QFormLayout(self)
-
-        self.path = ""
-        self.btn_path = QPushButton("Select Directory...")
-        self.lbl_path = QLabel("Not Selected")
-        self.btn_path.clicked.connect(self._select_directory)
-
-        self.spin_duration = QSpinBox()
-        self.spin_duration.setRange(10, 36000)
-        self.spin_duration.setValue(60)
-        self.spin_duration.setSuffix(" s")
-
-        layout.addRow("Save To:", self.btn_path)
-        layout.addRow("", self.lbl_path)
-        layout.addRow("Export Duration:", self.spin_duration)
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addRow(btns)
-
-    def _select_directory(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self)
-        if directory:
-            self.path = directory
-            self.lbl_path.setText(os.path.basename(directory) or directory)
+        layout.addWidget(_dialog_buttons(self))
 
 
 class LinkDatasetExportDialog(QDialog):
     def __init__(self, constellation_config: Dict[str, Any], parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("Export Link State Dataset")
-        self.setMinimumWidth(460)
+        self.setWindowTitle("导出链路状态数据集")
+        self.setMinimumWidth(520)
         self.path = ""
         self.constellation_config = dict(constellation_config)
 
         layout = QVBoxLayout(self)
+        _configure_box_layout(layout)
 
-        constellation_group = QGroupBox("Constellation")
+        constellation_group = QGroupBox("星座参数")
         constellation_layout = QFormLayout(constellation_group)
+        _configure_form_layout(constellation_layout)
 
         constellation_layout.addRow(
-            "Total Satellites (T):",
+            "卫星总数 (T)：",
             QLabel(str(self.constellation_config["total"])),
         )
         constellation_layout.addRow(
-            "Orbit Num:",
+            "轨道面数：",
             QLabel(str(self.constellation_config["orbit_num"])),
         )
         constellation_layout.addRow(
-            "Satellites Per Orbit:",
+            "每轨卫星数：",
             QLabel(str(self.constellation_config["sat_per_orbit"])),
         )
         constellation_layout.addRow(
-            "Phase Factor (F):",
+            "相位因子 (F)：",
             QLabel(str(self.constellation_config["phase_factor"])),
         )
         constellation_layout.addRow(
-            "Altitude:",
+            "轨道高度：",
             QLabel(f"{self.constellation_config['altitude_km']:.1f} km"),
         )
         constellation_layout.addRow(
-            "Inclination:",
+            "轨道倾角：",
             QLabel(f"{self.constellation_config['inclination_deg']:.1f} °"),
         )
         layout.addWidget(constellation_group)
 
-        simulation_group = QGroupBox("Simulation")
+        simulation_group = QGroupBox("仿真参数")
         simulation_layout = QFormLayout(simulation_group)
+        _configure_form_layout(simulation_layout)
 
         self.spin_time_slices = QSpinBox()
         self.spin_time_slices.setRange(1, 1_000_000)
@@ -184,14 +181,15 @@ class LinkDatasetExportDialog(QDialog):
         self.spin_duration.setValue(6000.0)
         self.spin_duration.setSuffix(" s")
 
-        simulation_layout.addRow("Time Slices:", self.spin_time_slices)
-        simulation_layout.addRow("Simulation Duration:", self.spin_duration)
+        simulation_layout.addRow("时间片数量：", self.spin_time_slices)
+        simulation_layout.addRow("仿真总时长：", self.spin_duration)
         layout.addWidget(simulation_group)
 
-        failure_group = QGroupBox("Random Link Failure")
+        failure_group = QGroupBox("随机链路失效")
         failure_layout = QFormLayout(failure_group)
+        _configure_form_layout(failure_layout)
 
-        self.chk_random_failure = QCheckBox("Enable Random Link Failure")
+        self.chk_random_failure = QCheckBox("启用随机链路失效")
 
         self.spin_failure_probability = QDoubleSpinBox()
         self.spin_failure_probability.setRange(0.0, 1.0)
@@ -204,27 +202,25 @@ class LinkDatasetExportDialog(QDialog):
         self.spin_random_seed.setValue(42)
 
         failure_layout.addRow(self.chk_random_failure)
-        failure_layout.addRow("Down Probability / Slice:", self.spin_failure_probability)
-        failure_layout.addRow("Random Seed:", self.spin_random_seed)
+        failure_layout.addRow("单片失效概率：", self.spin_failure_probability)
+        failure_layout.addRow("随机种子：", self.spin_random_seed)
         layout.addWidget(failure_group)
 
-        output_group = QGroupBox("Output")
+        output_group = QGroupBox("输出")
         output_layout = QFormLayout(output_group)
+        _configure_form_layout(output_layout)
 
-        self.btn_path = QPushButton("Select Directory...")
+        self.btn_path = QPushButton("选择目录...")
         self.btn_path.clicked.connect(self._select_directory)
 
-        self.lbl_path = QLabel("Not Selected")
+        self.lbl_path = QLabel("未选择")
         self.lbl_path.setWordWrap(True)
 
-        output_layout.addRow("Save To:", self.btn_path)
+        output_layout.addRow("保存到：", self.btn_path)
         output_layout.addRow("", self.lbl_path)
         layout.addWidget(output_group)
 
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        layout.addWidget(_dialog_buttons(self))
 
     def _select_directory(self) -> None:
         directory = QFileDialog.getExistingDirectory(self)
@@ -244,22 +240,24 @@ class LinkDatasetExportDialog(QDialog):
 
 
 class RedisSettingsDialog(QDialog):
-    """Redis + optional SSH tunnel configuration dialog."""
+    """Redis 与可选 SSH 隧道配置对话框。"""
 
     def __init__(self, config: Dict[str, Any], parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("Redis Connection Settings")
-        self.setMinimumWidth(560)
+        self.setWindowTitle("Redis 连接设置")
+        self.setMinimumWidth(600)
         self._config = dict(config)
 
         layout = QVBoxLayout(self)
+        _configure_box_layout(layout)
 
-        self.chk_enabled = QCheckBox("Enable Redis Query")
+        self.chk_enabled = QCheckBox("启用 Redis 查询")
         self.chk_enabled.setChecked(bool(self._config.get("enabled", False)))
         layout.addWidget(self.chk_enabled)
 
         redis_group = QGroupBox("Redis")
         redis_layout = QFormLayout(redis_group)
+        _configure_form_layout(redis_layout)
 
         self.txt_host = QLineEdit(str(self._config.get("host") or "127.0.0.1"))
 
@@ -276,7 +274,7 @@ class RedisSettingsDialog(QDialog):
 
         self.txt_key_prefix = QLineEdit(str(self._config.get("key_prefix") or "link"))
 
-        self.chk_loss_enabled = QCheckBox("Enable Loss Query")
+        self.chk_loss_enabled = QCheckBox("启用丢包查询")
         self.chk_loss_enabled.setChecked(bool(self._config.get("loss_enabled", False)))
 
         self.spin_loss_scale = QDoubleSpinBox()
@@ -290,21 +288,22 @@ class RedisSettingsDialog(QDialog):
         self.spin_socket_timeout.setValue(float(self._config.get("socket_timeout") or 0.05))
         self.spin_socket_timeout.setSuffix(" s")
 
-        redis_layout.addRow("Redis Host:", self.txt_host)
-        redis_layout.addRow("Redis Port:", self.spin_port)
-        redis_layout.addRow("Redis DB:", self.spin_db)
-        redis_layout.addRow("Redis Password:", self.txt_password)
-        redis_layout.addRow("Key Prefix:", self.txt_key_prefix)
+        redis_layout.addRow("Redis 主机：", self.txt_host)
+        redis_layout.addRow("Redis 端口：", self.spin_port)
+        redis_layout.addRow("Redis 数据库：", self.spin_db)
+        redis_layout.addRow("Redis 密码：", self.txt_password)
+        redis_layout.addRow("键名前缀：", self.txt_key_prefix)
         redis_layout.addRow(self.chk_loss_enabled)
-        redis_layout.addRow("Loss Scale:", self.spin_loss_scale)
-        redis_layout.addRow("Socket Timeout:", self.spin_socket_timeout)
+        redis_layout.addRow("丢包缩放：", self.spin_loss_scale)
+        redis_layout.addRow("连接超时：", self.spin_socket_timeout)
 
         layout.addWidget(redis_group)
 
-        ssh_group = QGroupBox("SSH Tunnel")
+        ssh_group = QGroupBox("SSH 隧道")
         ssh_layout = QFormLayout(ssh_group)
+        _configure_form_layout(ssh_layout)
 
-        self.chk_use_ssh = QCheckBox("Use SSH Tunnel")
+        self.chk_use_ssh = QCheckBox("使用 SSH 隧道")
         self.chk_use_ssh.setChecked(bool(self._config.get("use_ssh", False)))
         self.chk_use_ssh.toggled.connect(self._update_ssh_enabled)
 
@@ -320,7 +319,7 @@ class RedisSettingsDialog(QDialog):
         self.txt_ssh_password.setEchoMode(QLineEdit.Password)
 
         self.txt_ssh_private_key = QLineEdit(str(self._config.get("ssh_private_key") or ""))
-        self.btn_ssh_private_key = QPushButton("Browse...")
+        self.btn_ssh_private_key = QPushButton("浏览...")
         self.btn_ssh_private_key.clicked.connect(self._select_private_key)
 
         key_row = QHBoxLayout()
@@ -333,30 +332,39 @@ class RedisSettingsDialog(QDialog):
         self.txt_ssh_private_key_passphrase.setEchoMode(QLineEdit.Password)
 
         hint = QLabel(
-            "SSH mode: Redis Host/Port should be the Redis address as seen from the remote server. "
-            "For a private Redis service on that server, usually use 127.0.0.1:6379."
+            "SSH 模式下，Redis 主机和端口应填写远程服务器视角下的 Redis 地址。"
+            "如果 Redis 只在该服务器本机监听，通常填写 127.0.0.1:6379。"
         )
         hint.setWordWrap(True)
         hint.setAlignment(Qt.AlignLeft)
+        hint.setObjectName("hintLabel")
 
         ssh_layout.addRow(self.chk_use_ssh)
-        ssh_layout.addRow("SSH Host:", self.txt_ssh_host)
-        ssh_layout.addRow("SSH Port:", self.spin_ssh_port)
-        ssh_layout.addRow("SSH Username:", self.txt_ssh_username)
-        ssh_layout.addRow("SSH Password:", self.txt_ssh_password)
-        ssh_layout.addRow("Private Key:", key_row)
-        ssh_layout.addRow("Key Passphrase:", self.txt_ssh_private_key_passphrase)
+        ssh_layout.addRow("SSH 主机：", self.txt_ssh_host)
+        ssh_layout.addRow("SSH 端口：", self.spin_ssh_port)
+        ssh_layout.addRow("SSH 用户名：", self.txt_ssh_username)
+        ssh_layout.addRow("SSH 密码：", self.txt_ssh_password)
+        ssh_layout.addRow("私钥文件：", key_row)
+        ssh_layout.addRow("私钥口令：", self.txt_ssh_private_key_passphrase)
         ssh_layout.addRow(hint)
 
         layout.addWidget(ssh_group)
 
         btn_row = QHBoxLayout()
-        self.btn_test = QPushButton("Test Connection")
+        self.btn_test = QPushButton("测试连接")
         self.btn_test.clicked.connect(self._test_connection)
         btn_row.addWidget(self.btn_test)
         btn_row.addStretch()
 
         self.btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok_button = self.btns.button(QDialogButtonBox.Ok)
+        if ok_button is not None:
+            ok_button.setText("确定")
+            ok_button.setObjectName("primaryButton")
+            ok_button.setDefault(True)
+        cancel_button = self.btns.button(QDialogButtonBox.Cancel)
+        if cancel_button is not None:
+            cancel_button.setText("取消")
         self.btns.accepted.connect(self.accept)
         self.btns.rejected.connect(self.reject)
         btn_row.addWidget(self.btns)
@@ -365,7 +373,7 @@ class RedisSettingsDialog(QDialog):
         self._update_ssh_enabled(self.chk_use_ssh.isChecked())
 
     def _select_private_key(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select SSH Private Key", "", "All Files (*)")
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择 SSH 私钥", "", "所有文件 (*)")
         if file_path:
             self.txt_ssh_private_key.setText(file_path)
 
@@ -411,16 +419,16 @@ class RedisSettingsDialog(QDialog):
 
         if cfg["enabled"] and cfg["use_ssh"]:
             if not cfg["ssh_host"]:
-                QMessageBox.warning(self, "Redis Settings", "SSH Host is required when SSH tunnel is enabled.")
+                QMessageBox.warning(self, "Redis 设置", "启用 SSH 隧道时必须填写 SSH 主机。")
                 return
             if not cfg["ssh_username"]:
-                QMessageBox.warning(self, "Redis Settings", "SSH Username is required when SSH tunnel is enabled.")
+                QMessageBox.warning(self, "Redis 设置", "启用 SSH 隧道时必须填写 SSH 用户名。")
                 return
             if not cfg["ssh_password"] and not cfg["ssh_private_key"]:
                 QMessageBox.warning(
                     self,
-                    "Redis Settings",
-                    "Provide either an SSH password or an SSH private key when SSH tunnel is enabled.",
+                    "Redis 设置",
+                    "启用 SSH 隧道时，请提供 SSH 密码或 SSH 私钥。",
                 )
                 return
 
@@ -441,6 +449,6 @@ class RedisSettingsDialog(QDialog):
             message = str(exc)
 
         if ok:
-            QMessageBox.information(self, "Redis Test", message)
+            QMessageBox.information(self, "Redis 测试", message)
         else:
-            QMessageBox.warning(self, "Redis Test Failed", message)
+            QMessageBox.warning(self, "Redis 测试失败", message)

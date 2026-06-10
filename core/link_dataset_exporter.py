@@ -84,7 +84,7 @@ class RandomLinkFailureModel:
 
 
 class LinkDatasetExporter:
-    """Generate SatSimPro-compatible satellite_*.txt files from the orbit model."""
+    """Generate Satellite Simulation-compatible satellite_*.txt files from the orbit model."""
 
     def export(
         self,
@@ -199,23 +199,23 @@ class LinkDatasetExporter:
         output_dir: str,
     ) -> None:
         if orbit_num < 3:
-            raise ValueError("Orbit Num must be at least 3 to provide distinct plane neighbors.")
+            raise ValueError("轨道面数至少为 3，才能提供独立的相邻轨道面。")
         if orbit_num > 99:
-            raise ValueError("Orbit Num must be at most 99 for two-digit satellite IDs.")
+            raise ValueError("轨道面数最多为 99，以便生成两位卫星编号。")
         if sat_per_orbit < 3:
             raise ValueError(
-                "Satellites Per Orbit must be at least 3 to provide distinct in-plane neighbors."
+                "每轨卫星数至少为 3，才能提供独立的同轨相邻卫星。"
             )
         if sat_per_orbit > 99:
-            raise ValueError("Satellites Per Orbit must be at most 99 for two-digit satellite IDs.")
+            raise ValueError("每轨卫星数最多为 99，以便生成两位卫星编号。")
         if time_slices < 1:
-            raise ValueError("Time Slices must be at least 1.")
+            raise ValueError("时间片数量至少为 1。")
         if duration_sec <= 0:
-            raise ValueError("Simulation Duration must be greater than 0.")
+            raise ValueError("仿真总时长必须大于 0。")
         if not 0.0 <= failure_probability <= 1.0:
-            raise ValueError("Failure Probability must be between 0 and 1.")
+            raise ValueError("失效概率必须位于 0 到 1 之间。")
         if not output_dir:
-            raise ValueError("Output Directory is required.")
+            raise ValueError("必须选择输出目录。")
 
     def _prepare_output_dir(self, parent_dir: str) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

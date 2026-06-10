@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 
 class Visualizer(QWidget):
@@ -15,6 +15,26 @@ class Visualizer(QWidget):
 
         self.plotter = QtInteractor(self)
         self.layout.addWidget(self.plotter)
+
+        self.hud = QLabel(self.plotter)
+        self.hud.setObjectName("sceneHud")
+        self.hud.setStyleSheet(
+            """
+            QLabel#sceneHud {
+                background-color: #20242b;
+                border: 1px solid #3b4554;
+                border-radius: 8px;
+                color: #d7dce3;
+                padding: 8px 10px;
+                font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+                font-size: 12px;
+            }
+            """
+        )
+        self.hud.setText("卫星 0\n链路 0\nRedis 空闲")
+        self.hud.adjustSize()
+        self.hud.move(14, 14)
+        self.hud.raise_()
 
         self.cached_sat_pos = np.empty((0, 3), dtype=np.float64)
         self.cached_isl = np.empty((0,), dtype=np.int64)
@@ -29,7 +49,7 @@ class Visualizer(QWidget):
         self._init_scene()
 
     def _init_scene(self) -> None:
-        self.plotter.set_background("#1e1e1e")
+        self.plotter.set_background("#0f1218", top="#1a1f29")
 
         sphere = pv.Sphere(
             radius=6371,
@@ -53,16 +73,16 @@ class Visualizer(QWidget):
             except Exception:
                 self.plotter.add_mesh(
                     sphere,
-                    color="#112233",
+                    color="#192433",
                     style="wireframe",
-                    opacity=0.3,
+                    opacity=0.22,
                 )
         else:
             self.plotter.add_mesh(
                 sphere,
-                color="#112233",
+                color="#192433",
                 style="wireframe",
-                opacity=0.3,
+                opacity=0.22,
             )
 
         self.plotter.add_axes()
@@ -82,6 +102,28 @@ class Visualizer(QWidget):
             self.plotter.enable_depth_peeling()
         except Exception:
             pass
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.hud.move(14, 14)
+        self.hud.raise_()
+
+    def update_hud(
+        self,
+        *,
+        satellite_count: int,
+        active_link_count: int,
+        current_time,
+        redis_status: str,
+    ) -> None:
+        self.hud.setText(
+            f"卫星 {satellite_count}\n"
+            f"活动链路 {active_link_count}\n"
+            f"时间 {current_time:%Y-%m-%d %H:%M:%S}\n"
+            f"Redis {redis_status}"
+        )
+        self.hud.adjustSize()
+        self.hud.raise_()
 
     def update_scene(self, sat_positions, isl_lines, highlight_lines=None) -> None:
         self.cached_sat_pos = self._normalize_points(sat_positions)
@@ -221,8 +263,8 @@ class Visualizer(QWidget):
 
         self.sat_actor = self.plotter.add_mesh(
             cloud,
-            color="white",
-            point_size=8,
+            color="#dbeafe",
+            point_size=7,
             render_points_as_spheres=True,
         )
 
@@ -241,9 +283,9 @@ class Visualizer(QWidget):
             "rendered_isl",
             sats,
             self.cached_isl,
-            color="#00CC66",
-            line_width=3,
-            opacity=0.85,
+            color="#8ab4f8",
+            line_width=2,
+            opacity=0.58,
         )
 
     def _render_highlight_links(self, sats: np.ndarray) -> None:
@@ -257,6 +299,6 @@ class Visualizer(QWidget):
             "rendered_path_lines",
             sats,
             self.cached_path_lines,
-            color="#FFD700",
-            line_width=6,
+            color="#fdd663",
+            line_width=5,
         )

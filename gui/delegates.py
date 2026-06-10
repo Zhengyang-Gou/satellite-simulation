@@ -7,7 +7,8 @@ from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate
 
 from .link_state import is_down
-from .theme import DOWN
+
+DOWN_TEXT = "中断"
 
 
 class BarDelegate(QStyledItemDelegate):
@@ -27,15 +28,15 @@ class BarDelegate(QStyledItemDelegate):
         painter.setPen(Qt.NoPen)
         painter.fillRect(
             option.rect,
-            QColor("#094771")
+            QColor("#263243")
             if option.state & QStyle.State_Selected
-            else QColor("#252526") if index.row() % 2 == 1 else QColor("#1e1e1e"),
+            else QColor("#1a1d23") if index.row() % 2 == 1 else QColor("#15181d"),
         )
 
         if value_is_down:
             ratio = 1.0
-            color = QColor(200, 50, 50, 180)
-            text = DOWN
+            color = QColor("#5f2d32")
+            text = DOWN_TEXT
         else:
             try:
                 value = float(data)
@@ -45,7 +46,13 @@ class BarDelegate(QStyledItemDelegate):
                 return
 
             ratio = min(max(value / self.max_value, 0.0), 1.0)
-            color = QColor(int(255 * ratio), int(200 * (1.0 - ratio)), 60, 200)
+            low = QColor("#2f4f46")
+            high = QColor("#6b4a28")
+            color = QColor(
+                int(low.red() + (high.red() - low.red()) * ratio),
+                int(low.green() + (high.green() - low.green()) * ratio),
+                int(low.blue() + (high.blue() - low.blue()) * ratio),
+            )
             text = f"{value:.{self.decimals}f} {self.suffix}".rstrip()
 
         bar_rect = QRect(
@@ -57,9 +64,7 @@ class BarDelegate(QStyledItemDelegate):
         painter.setBrush(color)
         painter.drawRoundedRect(bar_rect, 4, 4)
 
-        painter.setPen(QColor(0, 0, 0, 150))
-        painter.drawText(option.rect.translated(1, 1), Qt.AlignCenter, text)
-        painter.setPen(QColor("#ffffff"))
+        painter.setPen(QColor("#e8f0fe"))
         painter.drawText(option.rect, Qt.AlignCenter, text)
         painter.restore()
 
