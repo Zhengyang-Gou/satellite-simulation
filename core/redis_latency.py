@@ -66,6 +66,7 @@ class RedisLatencyProvider:
             db=self.db,
             password=self.password,
             decode_responses=True,
+            protocol=2,
             socket_timeout=self.socket_timeout,
             socket_connect_timeout=self.socket_timeout,
         )
@@ -117,6 +118,18 @@ class RedisLatencyProvider:
                 pass
             self.tunnel = None
 
+    def _reconnect(self) -> None:
+        self.close()
+        self._connect()
+
+    def _ssh_session_active(self) -> bool:
+        if not self.use_ssh:
+            return True
+        if self.tunnel is None or not self.tunnel.is_active:
+            return False
+        transport = getattr(self.tunnel, "_transport", None)
+        return transport is not None and transport.is_active()
+
     def test_connection(self) -> Tuple[bool, str]:
         try:
             if self.client is None:
@@ -129,23 +142,20 @@ class RedisLatencyProvider:
             return False, str(exc)
 
     def get_redis_sat_id(self, sat):
-        if getattr(sat, "is_walker", False):
-            return 10000 + (sat.plane_idx + 1) * 100 + (sat.node_idx + 1)
+        return 10000 + (sat.plane_idx + 1) * 100 + (sat.node_idx + 1)
 
-        return sat.sat_id
-
-    def _metric_keys(self, src_id, tgt_id, metric):
-        return [
-            f"{self.key_prefix}:{src_id}:{tgt_id}:{metric}",
-            f"{self.key_prefix}:{tgt_id}:{src_id}:{metric}",
-        ]
+    def _metric_keys(self, src_id, tgt_id, metric, time_slice: Optional[int] = None):
+        if time_slice is not None and time_slice >= 0:
+            return [f"{self.key_prefix}:ts{time_slice}:{src_id}:{tgt_id}:{metric}"]
+        return [f"{self.key_prefix}:{src_id}:{tgt_id}:{metric}"]
 
     def _parse_metric_value(self, raw):
         if not raw:
             return "down"
 
         try:
-            return round(float(str(raw).split(",")[-1]), 4)
+            value = float(str(raw).rsplit(",", 1)[-1])
+            return round(value, 4)
         except Exception:
             return "down"
 
@@ -165,6 +175,7 @@ class RedisLatencyProvider:
         satellites: List[Any],
         metric: str,
         parser: Callable[[Any], Any],
+        time_slice: Optional[int] = None,
     ):
         result = {}
 
@@ -175,53 +186,75 @@ class RedisLatencyProvider:
             self._connect()
 
         sat_ids = [self.get_redis_sat_id(sat) for sat in satellites]
-        pipe = self.client.pipeline(transaction=False)
         query_plan = []
+        commands = []
 
         for link in links:
             src_idx = link["src"]
             tgt_idx = link["tgt"]
             src_id = sat_ids[src_idx]
             tgt_id = sat_ids[tgt_idx]
-            keys = self._metric_keys(src_id, tgt_id, metric)
+            keys = self._metric_keys(src_id, tgt_id, metric, time_slice)
 
-            pipe.lrange(keys[0], -1, -1)
-            pipe.lrange(keys[1], -1, -1)
+            commands.extend(keys)
             query_plan.append((src_idx, tgt_idx))
 
-        try:
-            redis_results = pipe.execute()
-        except Exception:
+        redis_results = None
+        for attempt in range(2):
+            try:
+                if attempt or not self._ssh_session_active():
+                    self._reconnect()
+                pipe = self.client.pipeline(transaction=False)
+                for key in commands:
+                    pipe.lrange(key, -1, -1)
+                redis_results = pipe.execute()
+                break
+            except Exception:
+                redis_results = None
+
+        if redis_results is None:
             for link in links:
                 result[(link["src"], link["tgt"])] = "down"
             return result
 
         pos = 0
         for src_idx, tgt_idx in query_plan:
-            forward_result = redis_results[pos]
-            reverse_result = redis_results[pos + 1]
-            pos += 2
+            latest_result = redis_results[pos]
+            pos += 1
 
             latest = "down"
-            if forward_result:
-                latest = parser(forward_result[-1])
-            elif reverse_result:
-                latest = parser(reverse_result[-1])
+            if latest_result:
+                latest = parser(latest_result[-1])
 
             result[(src_idx, tgt_idx)] = latest
 
         return result
 
-    def get_latest_metric_many(self, links: List[Dict[str, Any]], satellites: List[Any], metric: str):
-        return self._get_latest_many(links, satellites, metric, self._parse_metric_value)
+    def get_latest_delay_many(
+        self,
+        links: List[Dict[str, Any]],
+        satellites: List[Any],
+        time_slice: Optional[int] = None,
+    ):
+        return self._get_latest_many(links, satellites, "delay", self._parse_metric_value, time_slice)
 
-    def get_latest_loss_many(self, links: List[Dict[str, Any]], satellites: List[Any]):
-        return self._get_latest_many(links, satellites, "loss", self._parse_loss_pct)
+    def get_latest_loss_many(
+        self,
+        links: List[Dict[str, Any]],
+        satellites: List[Any],
+        time_slice: Optional[int] = None,
+    ):
+        return self._get_latest_many(links, satellites, "loss", self._parse_loss_pct, time_slice)
 
-    def get_latest_link_metrics_many(self, links: List[Dict[str, Any]], satellites: List[Any]):
+    def get_latest_link_metrics_many(
+        self,
+        links: List[Dict[str, Any]],
+        satellites: List[Any],
+        time_slice: Optional[int] = None,
+    ):
         metrics = {
-            "cal": self.get_latest_metric_many(links, satellites, "cal"),
+            "delay": self.get_latest_delay_many(links, satellites, time_slice),
         }
         if self.loss_enabled:
-            metrics["loss"] = self.get_latest_loss_many(links, satellites)
+            metrics["loss"] = self.get_latest_loss_many(links, satellites, time_slice)
         return metrics

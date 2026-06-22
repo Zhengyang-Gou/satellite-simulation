@@ -44,7 +44,8 @@ class GridDeltaStrategy(Strategy):
         self.latitude_threshold = latitude_threshold
         
     def compute_links(self, satellites):
-        if not satellites or not getattr(satellites[0], 'is_walker', False): return np.empty((0,), dtype=np.int64), []
+        if not satellites:
+            return np.empty((0,), dtype=np.int64), []
         if self.static_edges is None:
             self.static_edges = []; P = max(s.plane_idx for s in satellites) + 1; S = max(s.node_idx for s in satellites) + 1
             get_idx = lambda p, s: (p % P) * S + (s % S)

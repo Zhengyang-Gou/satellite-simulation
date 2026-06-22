@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
 from dataclasses import dataclass
@@ -9,6 +10,8 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
+
+from link_info import generate_link_info
 
 from .calculator import OrbitCalculator
 from .strategies import GridDeltaStrategy
@@ -115,6 +118,7 @@ class LinkDatasetExporter:
         )
 
         current_time = start_time or datetime.utcnow()
+        run_id = current_time.strftime("%Y%m%d_%H%M%S")
         walker_epoch_time = epoch_time or current_time
         strategy = strategy or GridDeltaStrategy()
         calculator = OrbitCalculator()
@@ -167,6 +171,17 @@ class LinkDatasetExporter:
                 raise LinkDatasetExportCancelled()
 
         output_dir = self._prepare_output_dir(output_dir)
+        link_info_path = os.path.join(output_dir, "link_info_15_35.txt")
+        link_info_content = generate_link_info(
+            calculator.satellites,
+            fixed_neighbors,
+            satellite_ids,
+        )
+        with open(link_info_path, "w", encoding="utf-8") as file:
+            file.write(link_info_content)
+            if link_info_content:
+                file.write("\n")
+
         for sat_idx in sorted(fixed_neighbors, key=lambda idx: satellite_ids[idx]):
             path = os.path.join(output_dir, f"satellite_{satellite_ids[sat_idx]}.txt")
             with open(path, "w", encoding="utf-8") as file:
@@ -181,6 +196,20 @@ class LinkDatasetExporter:
                 file.write(SEPARATOR + "\n")
                 file.write("\n".join(histories[sat_idx]))
                 file.write("\n")
+
+        manifest_path = os.path.join(output_dir, "manifest.json")
+        with open(manifest_path, "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "run_id": run_id,
+                    "step_duration_sec": step_seconds,
+                    "time_slices": time_slices,
+                },
+                file,
+                ensure_ascii=False,
+                indent=2,
+            )
+            file.write("\n")
 
         return LinkDatasetExportResult(
             output_dir=output_dir,
@@ -236,7 +265,7 @@ class LinkDatasetExporter:
         }
 
     def _build_fixed_neighbors(self, satellites: List[Any], strategy: Any) -> Dict[int, List[int]]:
-        if not satellites or not getattr(satellites[0], "is_walker", False):
+        if not satellites:
             return {}
 
         plane_count = max(sat.plane_idx for sat in satellites) + 1

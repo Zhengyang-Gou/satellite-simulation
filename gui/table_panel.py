@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from .delegates import LatencyDelegate, RatioDelegate
-from .link_state import LinkKey, LinkRecord, is_down, link_key
+from .link_state import LinkKey, LinkRecord, directed_link_key, is_down
 from .theme import DOWN, TABLE_HEADERS
 
 
@@ -57,7 +57,7 @@ class LinkTablePanel(QWidget):
         toolbar.setSpacing(8)
 
         self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("筛选链路，例如 0101 或 0101-0102")
+        self.txt_search.setPlaceholderText("筛选链路，例如 10101 或 10101-10102")
         self.txt_search.setMinimumWidth(320)
         self.txt_search.textChanged.connect(self._on_search_changed)
 
@@ -178,10 +178,10 @@ class LinkTablePanel(QWidget):
         for record in self.records:
             src_name = str(record["src_name"]).lower()
             tgt_name = str(record["tgt_name"]).lower()
+            link_id = str(record["id"]).lower()
             forward = f"{src_name}-{tgt_name}"
-            reverse = f"{tgt_name}-{src_name}"
 
-            if query in src_name or query in tgt_name or query in forward or query in reverse:
+            if query in link_id or query in src_name or query in tgt_name or query in forward:
                 result.append(record)
 
         self._filter_cache_query = query
@@ -216,7 +216,7 @@ class LinkTablePanel(QWidget):
                 self._write_table_row(row, record)
 
             for row, record in enumerate(page_data):
-                if link_key(record["src"], record["tgt"]) in self.selected_link_pairs:
+                if directed_link_key(record["src"], record["tgt"]) in self.selected_link_pairs:
                     self.table.setRangeSelected(
                         QTableWidgetSelectionRange(row, 0, row, self.table.columnCount() - 1),
                         True,
@@ -258,7 +258,7 @@ class LinkTablePanel(QWidget):
             record["src_name"],
             record["tgt_name"],
             record.get("latency", DOWN),
-            record.get("redis_cal_pct", DOWN),
+            record.get("redis_delay_ratio_pct", DOWN),
             record.get("redis_loss_pct", DOWN),
         ]
 
@@ -291,7 +291,7 @@ class LinkTablePanel(QWidget):
             src = src_item.data(Qt.UserRole)
             tgt = tgt_item.data(Qt.UserRole)
             if src is not None and tgt is not None:
-                selected.add(link_key(int(src), int(tgt)))
+                selected.add(directed_link_key(int(src), int(tgt)))
 
         self.selected_link_pairs = selected
         self.selection_changed.emit(set(self.selected_link_pairs))

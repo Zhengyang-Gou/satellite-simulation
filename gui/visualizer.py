@@ -108,6 +108,20 @@ class Visualizer(QWidget):
         self.hud.move(14, 14)
         self.hud.raise_()
 
+    def closeEvent(self, event) -> None:
+        self._remove_actor("path_actor")
+        self._remove_actor("isl_actor")
+        self._remove_actor("sat_actor")
+        try:
+            self.plotter.clear()
+        except Exception:
+            pass
+        try:
+            self.plotter.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def update_hud(
         self,
         *,

@@ -1,11 +1,10 @@
 # Satellite Simulation
 
-Satellite Simulation 是一个基于 PySide6、PyVista 和 SGP4 的卫星网络仿真工具。它提供三维地球与卫星链路可视化、Walker 星座生成、TLE 文件加载、链路表格查看、Redis 实时链路指标查询，以及离线链路状态数据集导出。
+Satellite Simulation 是一个基于 PySide6 和 PyVista 的卫星网络仿真工具。它提供三维地球与卫星链路可视化、Walker 星座生成、链路表格查看、Redis 实时链路指标查询，以及离线链路状态数据集导出。
 
 ## 功能概览
 
 - 三维可视化卫星位置、星间链路和选中链路。
-- 支持从 TLE 文件加载真实卫星轨道。
 - 支持生成 Walker 星座，参数包括卫星总数、轨道面数、相位因子、高度和倾角。
 - 使用 Grid Delta 拓扑策略生成星间链路。
 - 可启用纬度熔断，在高纬区域断开异轨链路。
@@ -36,7 +35,6 @@ conda env update -f environment.yml --prune
 - VTK
 - PyVista
 - PyVistaQt
-- sgp4
 - redis
 - sshtunnel
 
@@ -68,16 +66,6 @@ Linux Wayland 环境下，程序会自动尝试切换到 X11 后端以提升 Qt/
 
 注意：卫星总数必须能被轨道面数整除。
 
-### 加载 TLE 文件
-
-菜单路径：
-
-```text
-数据 -> 加载 TLE
-```
-
-支持 `.txt` 和 `.tle` 文件。程序会解析两行根数，并用 SGP4 推进卫星位置。
-
 ### 设置拓扑
 
 菜单路径：
@@ -93,11 +81,28 @@ Linux Wayland 环境下，程序会自动尝试切换到 X11 后端以提升 Qt/
 菜单路径：
 
 ```text
+仿真 -> Deploy
 仿真 -> 开始
 仿真 -> 步长设置
 ```
 
-`开始` 会按固定时间间隔推进仿真。`步长设置` 用于设置每次推进的仿真时间步长，单位秒。
+`Deploy` 会通过已配置的 SSH 主机执行远端脚本
+`/home/s223/yzy/scripts/deploy.sh`，用于清理旧环境、创建容器和 OVS、
+启动 rawsock 与收包器。部署过程在后台线程执行，成功后按钮会变为
+`Deployed` 并灰掉。
+
+`开始` 会进入远程实验播放模式：GUI 每 100 ms 平滑推进 Walker 画面，
+同时每 10 秒启动一个远程时间片测量：
+
+```text
+sudo bash /home/s223/yzy/scripts/measure_slice.sh <ts> 5 10
+```
+
+时间片从 `ts=0` 开始。远端脚本顺序执行：写入当前时间片、调用
+`apply_slice.py` 下发流表和 tc、发送 delay 探测包、发送 loss 探测包。
+如果某个时间片测量超过 10 秒，GUI 会停止播放并报错，不会启动下一片。
+
+`步长设置` 仅用于非远程播放时的本地推进步长。
 
 ## 导出链路状态数据集
 
@@ -122,9 +127,21 @@ Linux Wayland 环境下，程序会自动尝试切换到 X11 后端以提升 Qt/
 
 ```text
 LinkDataset_YYYYMMDD_HHMMSS/
+  link_info_15_35.txt
+  manifest.json
   satellite_10101.txt
   satellite_10102.txt
   ...
+```
+
+`manifest.json` 记录本次仿真的运行编号、单个时间片时长和时间片数量：
+
+```json
+{
+  "run_id": "20260614_055437",
+  "step_duration_sec": 10.0,
+  "time_slices": 6
+}
 ```
 
 每个卫星一个文件，记录该卫星固定 4 个邻居在各时间片的链路状态。链路可用时写入延迟，链路不可用时写入：
@@ -155,46 +172,39 @@ Satellite_10102 Satellite_10201 Satellite_10199 Satellite_10103
 
 ```text
 Redis -> 启用 Redis 查询
-Redis -> Redis 设置
 ```
 
-Redis 查询默认关闭。可以在 GUI 中启用，也可以通过环境变量启用。
+Redis 查询默认关闭。勾选后，程序会自动通过 SSH 连接固定服务器
+`121.48.163.223`，并访问该服务器本机的 Redis `127.0.0.1:6379`。
 
-常用环境变量：
+也可以在启动前用环境变量默认启用：
 
 ```bash
 SATNET_REDIS_ENABLED=1
-SATNET_REDIS_HOST=127.0.0.1
-SATNET_REDIS_PORT=6379
-SATNET_REDIS_DB=0
-SATNET_REDIS_PASSWORD=
-SATNET_REDIS_KEY_PREFIX=link
-SATNET_REDIS_LOSS_ENABLED=1
-SATNET_REDIS_LOSS_SCALE=1.0
-SATNET_REDIS_SOCKET_TIMEOUT=0.05
-SATNET_REDIS_QUERY_INTERVAL=2
 ```
 
-SSH 隧道相关变量：
-
-```bash
-SATNET_REDIS_USE_SSH=1
-SATNET_SSH_HOST=
-SATNET_SSH_PORT=22
-SATNET_SSH_USERNAME=
-SATNET_SSH_PASSWORD=
-SATNET_SSH_PRIVATE_KEY=
-SATNET_SSH_PRIVATE_KEY_PASSPHRASE=
-```
+SSH 主机、用户名、私钥、Redis 地址和 Redis key 前缀均已固定在项目配置中。
+密码不会写入项目；默认使用 SSH 私钥免密连接。Redis 密码写入仅当前用户可读的
+`~/.config/satellite-simulation/redis_password`。
 
 Redis key 默认格式：
 
 ```text
-link:<src_id>:<tgt_id>:<metric>
-link:<tgt_id>:<src_id>:<metric>
+data:ts<slice_id>:<src_id>:<tgt_id>:delay
+data:ts<slice_id>:<src_id>:<tgt_id>:loss
 ```
 
-程序会同时尝试正向和反向 key，并读取列表中的最新值。
+Value 为 Redis List，每项格式为 `timestamp,value`。程序使用
+`LRANGE key -1 -1` 读取最新值，并同时尝试正向和反向链路 key。
+
+写入 Redis 前应将 `delay` 统一换算为毫秒。读取端直接按毫秒解析，
+再在表格中显示为 `Redis 时延 / 计算时延 (%)`。
+默认认为 `loss` 是 0 到 1 的比例，并转换为百分比。
+
+```text
+data:ts0:10101:10102:delay -> "1718400010.345678,4.095800"
+data:ts0:10101:10102:loss  -> "1718400010.345678,0.012500"
+```
 
 ## 项目结构
 
@@ -204,7 +214,7 @@ satellite-simulation/
   environment.yml               # Conda 环境
   assets/                       # 贴图和图标资源
   core/
-    calculator.py               # TLE 解析、Walker 生成和轨道推进
+    calculator.py               # Walker 生成和轨道推进
     strategies.py               # 链路拓扑策略
     link_dataset_exporter.py    # 链路状态数据集导出
     redis_latency.py            # Redis 链路指标读取

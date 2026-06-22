@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from core.redis_latency import RedisLatencyProvider
 from .link_state import LinkRecord
@@ -11,8 +11,8 @@ from .link_state import LinkRecord
 class RedisQueryWorker(QObject):
     """Run Redis and SSH tunnel I/O away from the GUI thread."""
 
-    result_ready = Signal(int, object)
-    error = Signal(int, str)
+    result_ready = Signal(int, int, object)
+    error = Signal(int, int, str)
 
     def __init__(self, redis_config: Dict[str, Any]):
         super().__init__()
@@ -24,16 +24,17 @@ class RedisQueryWorker(QObject):
             self.provider = RedisLatencyProvider(**self.redis_config)
         return self.provider
 
-    @Slot(int, object, object)
-    def query(self, query_id: int, active_links: List[LinkRecord], satellites: List[Any]) -> None:
+    @Slot(int, int, object, object)
+    def query(self, query_id: int, time_slice: int, active_links: List[LinkRecord], satellites: List[Any]) -> None:
         try:
-            metrics = self._provider().get_latest_link_metrics_many(active_links, satellites)
-            self.result_ready.emit(query_id, metrics)
+            metrics = self._provider().get_latest_link_metrics_many(active_links, satellites, time_slice)
+            self.result_ready.emit(query_id, time_slice, metrics)
         except Exception as exc:  # Redis/SSH errors should never block or crash the UI.
-            self.error.emit(query_id, str(exc))
+            self.error.emit(query_id, time_slice, str(exc))
 
     @Slot()
     def close(self) -> None:
         if self.provider is not None:
             self.provider.close()
             self.provider = None
+        QThread.currentThread().quit()

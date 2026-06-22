@@ -15,6 +15,16 @@ def link_key(src: int, tgt: int) -> LinkKey:
     return (src, tgt) if src < tgt else (tgt, src)
 
 
+def directed_link_key(src: int, tgt: int) -> LinkKey:
+    """Return a direction-sensitive key for one Redis-facing link."""
+    return (src, tgt)
+
+
+def remote_sat_id(sat: Any) -> int:
+    """Return the satellite id used by the remote container/Redis scripts."""
+    return 10000 + (sat.plane_idx + 1) * 100 + (sat.node_idx + 1)
+
+
 def is_down(value: Any) -> bool:
     return str(value).lower() == DOWN
 

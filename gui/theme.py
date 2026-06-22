@@ -223,4 +223,11 @@ QScrollBar::add-line, QScrollBar::sub-line {
 """
 
 DOWN = "down"
-TABLE_HEADERS = ["链路编号", "源卫星", "目标卫星", "时延 (ms)", "Redis / 计算 (%)", "Redis 丢包 (%)"]
+TABLE_HEADERS = [
+    "链路ID",
+    "源卫星ID",
+    "目标卫星ID",
+    "计算时延 (ms)",
+    "Redis 时延 / 计算时延 (%)",
+    "Redis 丢包 (%)",
+]

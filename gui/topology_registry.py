@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Set
 
 from core.strategies import GridDeltaStrategy
 
-from .link_state import LinkKey, LinkRecord, is_down, link_key
+from .link_state import LinkKey, LinkRecord, directed_link_key, is_down, link_key, remote_sat_id
 from .theme import DOWN
 
 
@@ -53,9 +53,10 @@ class TopologyRegistry:
 
         self._build_delta_registry(strategy, satellites)
 
-        self.all_links_data = sorted(self.link_registry.values(), key=lambda x: (x["src_name"], x["tgt_name"]))
-        for idx, record in enumerate(self.all_links_data, start=1):
-            record["id"] = idx
+        self.all_links_data = sorted(
+            self.link_registry.values(),
+            key=lambda x: (x["src_id"], x["neighbor_order"], x["tgt_id"]),
+        )
 
     def _build_delta_registry(self, strategy: GridDeltaStrategy, satellites: List[Any]) -> None:
         if strategy.static_edges is None:
@@ -64,19 +65,57 @@ class TopologyRegistry:
         if not strategy.static_edges:
             return
 
+        undirected_edges = set()
         for _edge_type, src, tgt in strategy.static_edges:
-            self.link_registry[link_key(src, tgt)] = self._new_link_record(src, tgt, satellites)
+            undirected_edges.add(link_key(src, tgt))
 
-    def _new_link_record(self, src: int, tgt: int, satellites: List[Any]) -> LinkRecord:
+        neighbors_by_src: Dict[int, List[int]] = {}
+        for src, tgt in sorted(undirected_edges):
+            neighbors_by_src.setdefault(src, []).append(tgt)
+            neighbors_by_src.setdefault(tgt, []).append(src)
+
+        neighbor_order: Dict[LinkKey, int] = {}
+        for src, neighbors in neighbors_by_src.items():
+            ordered_neighbors = sorted(neighbors, key=lambda idx: remote_sat_id(satellites[idx]))
+            for order, tgt in enumerate(ordered_neighbors):
+                neighbor_order[directed_link_key(src, tgt)] = order
+
+        for src, tgt in sorted(undirected_edges):
+            self.link_registry[directed_link_key(src, tgt)] = self._new_link_record(
+                src,
+                tgt,
+                satellites,
+                neighbor_order.get(directed_link_key(src, tgt), 0),
+            )
+            self.link_registry[directed_link_key(tgt, src)] = self._new_link_record(
+                tgt,
+                src,
+                satellites,
+                neighbor_order.get(directed_link_key(tgt, src), 0),
+            )
+
+    def _new_link_record(
+        self,
+        src: int,
+        tgt: int,
+        satellites: List[Any],
+        neighbor_order: int,
+    ) -> LinkRecord:
+        src_id = remote_sat_id(satellites[src])
+        tgt_id = remote_sat_id(satellites[tgt])
         return {
+            "id": f"{src_id}-{tgt_id}",
             "src": src,
             "tgt": tgt,
-            "src_name": satellites[src].name,
-            "tgt_name": satellites[tgt].name,
+            "src_id": src_id,
+            "tgt_id": tgt_id,
+            "src_name": str(src_id),
+            "tgt_name": str(tgt_id),
+            "neighbor_order": neighbor_order,
             "latency": DOWN,
-            "redis_cal_pct": DOWN,
+            "redis_delay_ratio_pct": DOWN,
             "redis_loss_pct": DOWN,
-            "_redis_cal_target": DOWN,
+            "_redis_delay_ratio_target": DOWN,
             "_redis_loss_target": DOWN,
         }
 
@@ -84,14 +123,15 @@ class TopologyRegistry:
         current_active_keys = set()
 
         for active in active_links:
-            key = link_key(active["src"], active["tgt"])
-            record = self.link_registry.get(key)
-            if record is None:
-                continue
+            for src, tgt in ((active["src"], active["tgt"]), (active["tgt"], active["src"])):
+                key = directed_link_key(src, tgt)
+                record = self.link_registry.get(key)
+                if record is None:
+                    continue
 
-            record["latency"] = active["latency"]
-            self._advance_redis_display(record)
-            current_active_keys.add(key)
+                record["latency"] = active["latency"]
+                self._advance_redis_display(record)
+                current_active_keys.add(key)
 
         for key in self.active_link_keys - current_active_keys:
             record = self.link_registry.get(key)
@@ -99,18 +139,18 @@ class TopologyRegistry:
                 continue
 
             record["latency"] = DOWN
-            record["redis_cal_pct"] = DOWN
+            record["redis_delay_ratio_pct"] = DOWN
             record["redis_loss_pct"] = DOWN
-            record["_redis_cal_target"] = DOWN
+            record["_redis_delay_ratio_target"] = DOWN
             record["_redis_loss_target"] = DOWN
 
         self.active_link_keys = current_active_keys
         self.active_count = len(current_active_keys)
 
     def _advance_redis_display(self, record: LinkRecord) -> None:
-        record["redis_cal_pct"] = self._smooth_metric(
-            record.get("redis_cal_pct", DOWN),
-            record.get("_redis_cal_target", DOWN),
+        record["redis_delay_ratio_pct"] = self._smooth_metric(
+            record.get("redis_delay_ratio_pct", DOWN),
+            record.get("_redis_delay_ratio_target", DOWN),
         )
         record["redis_loss_pct"] = self._smooth_metric(
             record.get("redis_loss_pct", DOWN),
@@ -120,25 +160,39 @@ class TopologyRegistry:
     def active_for_redis(self) -> List[LinkRecord]:
         return [
             {"src": record["src"], "tgt": record["tgt"]}
-            for key in self.active_link_keys
+            for key in sorted(
+                self.active_link_keys,
+                key=lambda item: (
+                    self.link_registry[item]["src_id"],
+                    self.link_registry[item]["neighbor_order"],
+                    self.link_registry[item]["tgt_id"],
+                ),
+            )
             if (record := self.link_registry.get(key)) is not None
             and not is_down(record.get("latency"))
         ]
 
-    def apply_redis_cal(self, redis_cal_map: Dict[LinkKey, Any]) -> None:
+    def apply_redis_delay(self, redis_delay_map: Dict[LinkKey, Any]) -> None:
         for key in self.active_link_keys:
             record = self.link_registry.get(key)
             if record is None:
                 continue
 
             if is_down(record.get("latency", DOWN)):
-                record["redis_cal_pct"] = DOWN
+                record["redis_delay_ratio_pct"] = DOWN
                 record["redis_loss_pct"] = DOWN
                 continue
 
-            target = redis_cal_map.get((record["src"], record["tgt"]), DOWN)
-            record["_redis_cal_target"] = target
-            record["redis_cal_pct"] = self._smooth_metric(record.get("redis_cal_pct", DOWN), target)
+            delay_ms = redis_delay_map.get((record["src"], record["tgt"]), DOWN)
+            try:
+                target = round(float(delay_ms) / float(record["latency"]) * 100.0, 4)
+            except (TypeError, ValueError, ZeroDivisionError):
+                target = DOWN
+            record["_redis_delay_ratio_target"] = target
+            record["redis_delay_ratio_pct"] = self._smooth_metric(
+                record.get("redis_delay_ratio_pct", DOWN),
+                target,
+            )
 
     def apply_redis_loss(self, redis_loss_map: Dict[LinkKey, Any]) -> None:
         for key in self.active_link_keys:
@@ -171,7 +225,7 @@ class TopologyRegistry:
 
     def mark_redis_down(self) -> None:
         for record in self.link_registry.values():
-            record["redis_cal_pct"] = DOWN
+            record["redis_delay_ratio_pct"] = DOWN
             record["redis_loss_pct"] = DOWN
-            record["_redis_cal_target"] = DOWN
+            record["_redis_delay_ratio_target"] = DOWN
             record["_redis_loss_target"] = DOWN

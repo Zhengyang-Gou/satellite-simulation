@@ -1,6 +1,7 @@
 """Main application window after modularizing UI, table, topology, and Redis concerns."""
 
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any, Dict, Optional, Set
 
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal, Slot
@@ -8,7 +9,6 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
-    QFileDialog,
     QInputDialog,
     QMainWindow,
     QMessageBox,
@@ -23,15 +23,21 @@ from core.calculator import OrbitCalculator
 from core.link_dataset_exporter import LinkDatasetExportCancelled, LinkDatasetExporter
 from core.strategies import GridDeltaStrategy
 
-from .config import env_int, redis_config_from_env
+from .config import (
+    DEFAULT_REMOTE_SLICE_DURATION_SEC,
+    DEFAULT_REMOTE_TIME_SLICES,
+    env_int,
+    redis_config_from_env,
+)
+from .deploy_worker import RemoteDeployWorker
 from .dialogs import (
     LinkDatasetExportDialog,
-    RedisSettingsDialog,
     TopologyDialog,
     WalkerDialog,
 )
 from .link_state import LinkKey, link_pairs_to_lines, satellite_positions_array
 from .redis_worker import RedisQueryWorker
+from .remote_play_worker import RemoteMeasureSliceWorker
 from .table_panel import LinkTablePanel
 from .theme import DARK_THEME
 from .topology_registry import TopologyRegistry
@@ -39,7 +45,8 @@ from .visualizer import Visualizer
 
 
 class MainWindow(QMainWindow):
-    redis_query_requested = Signal(int, object, object)
+    redis_query_requested = Signal(int, int, object, object)
+    redis_close_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -61,6 +68,18 @@ class MainWindow(QMainWindow):
         self.redis_last_error = ""
         self.redis_worker_thread: Optional[QThread] = None
         self.redis_worker: Optional[RedisQueryWorker] = None
+        self.deploy_worker_thread: Optional[QThread] = None
+        self.deploy_worker: Optional[RemoteDeployWorker] = None
+        self.deploy_completed = False
+        self.remote_measure_thread: Optional[QThread] = None
+        self.remote_measure_worker: Optional[RemoteMeasureSliceWorker] = None
+        self.remote_measure_in_flight = False
+        self.remote_current_slice = 0
+        self.remote_total_slices = DEFAULT_REMOTE_TIME_SLICES
+        self.remote_slice_duration_sec = DEFAULT_REMOTE_SLICE_DURATION_SEC
+        self.remote_play_epoch_time: Optional[datetime] = None
+        self.remote_play_started_at = 0.0
+        self.remote_slice_active_links: Dict[int, Any] = {}
 
         if self.redis_enabled:
             self.start_redis_worker(self.redis_config)
@@ -79,6 +98,10 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.loop)
 
+        self.remote_slice_timer = QTimer(self)
+        self.remote_slice_timer.setInterval(int(self.remote_slice_duration_sec * 1000))
+        self.remote_slice_timer.timeout.connect(self._on_remote_slice_tick)
+
     def start_redis_worker(self, redis_config: Dict[str, Any]) -> None:
         self.stop_redis_worker()
 
@@ -86,6 +109,7 @@ class MainWindow(QMainWindow):
         self.redis_worker = RedisQueryWorker(redis_config)
         self.redis_worker.moveToThread(self.redis_worker_thread)
         self.redis_query_requested.connect(self.redis_worker.query)
+        self.redis_close_requested.connect(self.redis_worker.close)
         self.redis_worker.result_ready.connect(self._apply_redis_result)
         self.redis_worker.error.connect(self._handle_redis_error)
         self.redis_worker_thread.start()
@@ -101,13 +125,14 @@ class MainWindow(QMainWindow):
                 pass
 
             try:
-                self.redis_worker.close()
-            except Exception:
+                self.redis_close_requested.emit()
+            except RuntimeError:
                 pass
 
         if self.redis_worker_thread is not None:
-            self.redis_worker_thread.quit()
-            self.redis_worker_thread.wait(1500)
+            if not self.redis_worker_thread.wait(5000):
+                self.redis_worker_thread.quit()
+                self.redis_worker_thread.wait(1500)
 
         self.redis_worker = None
         self.redis_worker_thread = None
@@ -136,13 +161,9 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
 
         m_data = mb.addMenu("数据")
-        self.act_load_tle = QAction("加载 TLE", self)
-        self.act_load_tle.triggered.connect(self.load_tle_file)
-
         self.act_generate_walker = QAction("生成 Walker 星座", self)
         self.act_generate_walker.triggered.connect(self.open_walker_gen)
 
-        m_data.addAction(self.act_load_tle)
         m_data.addAction(self.act_generate_walker)
 
         m_topo = mb.addMenu("拓扑")
@@ -156,12 +177,16 @@ class MainWindow(QMainWindow):
         self.act_play.triggered.connect(self.toggle_sim)
         self.act_play.setEnabled(False)
 
+        self.act_deploy = QAction("Deploy", self)
+        self.act_deploy.triggered.connect(self.deploy_remote)
+
         self.act_step = QAction("步长设置", self)
         self.act_step.triggered.connect(self.open_step_settings)
 
         self.act_export_dataset = QAction("导出数据集", self)
         self.act_export_dataset.triggered.connect(self.open_link_dataset_export)
 
+        m_sim.addAction(self.act_deploy)
         m_sim.addAction(self.act_play)
         m_sim.addAction(self.act_step)
         m_sim.addSeparator()
@@ -175,9 +200,6 @@ class MainWindow(QMainWindow):
         self.act_redis_enable.toggled.connect(self.toggle_redis_query)
 
         m_redis.addAction(self.act_redis_enable)
-        self.act_redis_settings = QAction("Redis 设置", self)
-        self.act_redis_settings.triggered.connect(self.open_redis_settings)
-        m_redis.addAction(self.act_redis_settings)
 
     def _init_toolbar(self) -> None:
         toolbar = QToolBar("主工具栏")
@@ -186,23 +208,21 @@ class MainWindow(QMainWindow):
         toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
 
         style = self.style()
-        self.act_load_tle.setIcon(style.standardIcon(QStyle.SP_DialogOpenButton))
         self.act_generate_walker.setIcon(style.standardIcon(QStyle.SP_FileDialogNewFolder))
+        self.act_deploy.setIcon(style.standardIcon(QStyle.SP_ComputerIcon))
         self.act_play.setIcon(style.standardIcon(QStyle.SP_MediaPlay))
         self.act_step.setIcon(style.standardIcon(QStyle.SP_BrowserReload))
         self.act_export_dataset.setIcon(style.standardIcon(QStyle.SP_DriveHDIcon))
         self.act_redis_enable.setIcon(style.standardIcon(QStyle.SP_DriveNetIcon))
-        self.act_redis_settings.setIcon(style.standardIcon(QStyle.SP_FileDialogDetailedView))
 
-        toolbar.addAction(self.act_load_tle)
         toolbar.addAction(self.act_generate_walker)
         toolbar.addSeparator()
+        toolbar.addAction(self.act_deploy)
         toolbar.addAction(self.act_play)
         toolbar.addAction(self.act_step)
         toolbar.addAction(self.act_export_dataset)
         toolbar.addSeparator()
         toolbar.addAction(self.act_redis_enable)
-        toolbar.addAction(self.act_redis_settings)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
     def _set_redis_action_checked(self, checked: bool) -> None:
@@ -229,29 +249,54 @@ class MainWindow(QMainWindow):
         self._set_redis_action_checked(self.redis_enabled)
         self._refresh_table()
 
-    def open_redis_settings(self) -> None:
-        dlg = RedisSettingsDialog(self.redis_config, self)
-        if dlg.exec() != QDialog.Accepted:
+    def deploy_remote(self) -> None:
+        if self.deploy_worker_thread is not None:
             return
 
-        new_config = dlg.config()
-        need_restart = self.redis_enabled or bool(new_config.get("enabled", False))
+        self.deploy_completed = False
+        self.act_deploy.setEnabled(False)
+        self.act_deploy.setText("Deploying...")
+        self.statusBar().showMessage("正在远程部署，请稍候...")
 
-        if need_restart:
-            self.stop_redis_worker()
+        self.deploy_worker_thread = QThread(self)
+        self.deploy_worker = RemoteDeployWorker()
+        self.deploy_worker.moveToThread(self.deploy_worker_thread)
+        self.deploy_worker_thread.started.connect(self.deploy_worker.run)
+        self.deploy_worker.finished.connect(self._handle_deploy_finished)
+        self.deploy_worker.finished.connect(self.deploy_worker_thread.quit)
+        self.deploy_worker_thread.finished.connect(self.deploy_worker.deleteLater)
+        self.deploy_worker_thread.finished.connect(self._cleanup_deploy_worker)
+        self.deploy_worker_thread.start()
 
-        self.redis_config = new_config
-        self.redis_enabled = bool(new_config.get("enabled", False))
-        self.redis_query_counter = 0
-        self.redis_query_in_flight = False
-        self.redis_last_error = ""
-        self.registry.mark_redis_down()
+    @Slot(bool, str)
+    def _handle_deploy_finished(self, ok: bool, message: str) -> None:
+        summary = self._deploy_message_summary(message)
+        if ok:
+            self.deploy_completed = True
+            self.act_deploy.setText("Deployed")
+            self.statusBar().showMessage(summary or "远程部署完成")
+            QMessageBox.information(self, "Deploy", summary or "远程部署完成。")
+        else:
+            self.deploy_completed = False
+            self.act_deploy.setText("Deploy")
+            self.act_deploy.setEnabled(True)
+            self.statusBar().showMessage("远程部署失败")
+            QMessageBox.warning(self, "Deploy 失败", summary or "远程部署失败。")
 
-        if self.redis_enabled:
-            self.start_redis_worker(self.redis_config)
+    @Slot()
+    def _cleanup_deploy_worker(self) -> None:
+        if self.deploy_worker_thread is not None:
+            self.deploy_worker_thread.deleteLater()
+        self.deploy_worker_thread = None
+        self.deploy_worker = None
+        if not self.deploy_completed and hasattr(self, "act_deploy"):
+            self.act_deploy.setEnabled(True)
 
-        self._set_redis_action_checked(self.redis_enabled)
-        self._refresh_table()
+    def _deploy_message_summary(self, message: str) -> str:
+        lines = [line.strip() for line in str(message).splitlines() if line.strip()]
+        if not lines:
+            return ""
+        return "\n".join(lines[-8:])
 
     def _on_selected_links_changed(self, selected: Set[LinkKey]) -> None:
         self.selected_link_pairs = selected
@@ -428,10 +473,7 @@ class MainWindow(QMainWindow):
         )
 
     def _has_walker_constellation(self) -> bool:
-        return bool(
-            self.calculator.satellites
-            and getattr(self.calculator.satellites[0], "is_walker", False)
-        )
+        return bool(self.calculator.satellites)
 
     def _walker_dataset_export_error(self) -> str:
         if not self.current_walker_config or not self._has_walker_constellation():
@@ -457,42 +499,170 @@ class MainWindow(QMainWindow):
             latitude_threshold=getattr(self.strategy, "latitude_threshold", 70.0),
         )
 
-    def load_tle_file(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "打开 TLE 文件", "", "TLE 文件 (*.txt *.tle)")
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "r", encoding="utf-8") as file:
-                count = self.calculator.load_tle_data(file.read())
-        except UnicodeDecodeError:
-            with open(file_path, "r", encoding="latin-1") as file:
-                count = self.calculator.load_tle_data(file.read())
-        except OSError as exc:
-            QMessageBox.warning(self, "加载 TLE", f"打开文件失败：\n{exc}")
-            return
-
-        if count:
-            self.current_walker_config = None
-            self.reset_simulation_state()
-            self.act_play.setEnabled(True)
-            self.loop(advance=False)
-        else:
-            QMessageBox.warning(self, "加载 TLE", "未从该 TLE 文件中加载到有效卫星。")
-
     def toggle_sim(self) -> None:
-        self.is_playing = not self.is_playing
-        self.act_play.setText("暂停" if self.is_playing else "开始")
+        if self.is_playing:
+            self.stop_remote_play("已停止远程实验播放")
+        else:
+            self.start_remote_play()
+
+    def start_remote_play(self) -> None:
+        if not self.calculator.satellites:
+            QMessageBox.warning(self, "Play", "请先生成 Walker 星座。")
+            return
+        if self.remote_measure_thread is not None:
+            return
+
+        if not self.redis_enabled:
+            self.redis_config["enabled"] = True
+            self.redis_enabled = True
+            self._set_redis_action_checked(True)
+            self.start_redis_worker(self.redis_config)
+
+        self.is_playing = True
+        self.remote_current_slice = 0
+        self.remote_measure_in_flight = False
+        self.remote_slice_active_links.clear()
+        self.remote_play_epoch_time = self.current_walker_config.get("epoch_time") if self.current_walker_config else self.current_time
+        self.remote_play_started_at = monotonic()
+        self.redis_last_error = ""
+        self.redis_query_in_flight = False
+
+        self.act_play.setText("停止")
         self.act_play.setIcon(
-            self.style().standardIcon(QStyle.SP_MediaPause if self.is_playing else QStyle.SP_MediaPlay)
+            self.style().standardIcon(QStyle.SP_MediaStop)
+        )
+        self.act_deploy.setEnabled(False)
+        self.act_step.setEnabled(False)
+
+        self._prepare_remote_slice(self.remote_current_slice)
+        self._start_remote_measure(self.remote_current_slice)
+        self.timer.start(100)
+        self.remote_slice_timer.start()
+
+    def stop_remote_play(self, message: str = "", *, finished: bool = False) -> None:
+        self.is_playing = False
+        self.timer.stop()
+        self.remote_slice_timer.stop()
+        self.remote_measure_in_flight = False
+
+        if self.remote_measure_thread is not None:
+            if self.remote_measure_worker is not None:
+                self.remote_measure_worker.cancel()
+            self.remote_measure_thread.quit()
+            self.remote_measure_thread.wait(5000)
+            self.remote_measure_thread = None
+            self.remote_measure_worker = None
+
+        self.act_play.setText("开始")
+        self.act_play.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.act_step.setEnabled(True)
+        if not self.deploy_completed:
+            self.act_deploy.setEnabled(True)
+
+        if message:
+            self.statusBar().showMessage(message)
+            if not finished:
+                QMessageBox.warning(self, "Play", message)
+
+    def _on_remote_slice_tick(self) -> None:
+        if not self.is_playing:
+            return
+        if self.remote_measure_in_flight:
+            self.stop_remote_play(
+                f"时间片 {self.remote_current_slice} 未在 {self.remote_slice_duration_sec:g}s 内完成，已停止。"
+            )
+            return
+
+        self.remote_current_slice += 1
+        if self.remote_current_slice >= self.remote_total_slices:
+            self.stop_remote_play("远程实验播放完成", finished=True)
+            return
+
+        self._prepare_remote_slice(self.remote_current_slice)
+        self._start_remote_measure(self.remote_current_slice)
+
+    def _prepare_remote_slice(self, time_slice: int) -> None:
+        if self.remote_play_epoch_time is None:
+            self.remote_play_epoch_time = self.current_time
+        self.current_time = self.remote_play_epoch_time + timedelta(
+            seconds=time_slice * self.remote_slice_duration_sec
+        )
+        self.calculator.propagate(self.current_time)
+        self.registry.build_if_needed(self.strategy, self.calculator.satellites)
+        isl, active_links = self.strategy.compute_links(self.calculator.satellites)
+        self.registry.apply_active_links(active_links)
+        self.remote_slice_active_links[time_slice] = self.registry.active_for_redis()
+        self._refresh_table()
+        self.visualizer.update_scene(
+            satellite_positions_array(self.calculator.satellites),
+            isl,
+            highlight_lines=link_pairs_to_lines(self.selected_link_pairs),
         )
 
-        if self.is_playing:
-            self.timer.start(100)
-        else:
-            self.timer.stop()
+    def _start_remote_measure(self, time_slice: int) -> None:
+        if self.remote_measure_thread is not None:
+            self.remote_measure_thread.quit()
+            self.remote_measure_thread.wait(1000)
+            self.remote_measure_thread = None
+            self.remote_measure_worker = None
+
+        self.remote_measure_in_flight = True
+        self.statusBar().showMessage(f"远程测量时间片 {time_slice}/{self.remote_total_slices - 1}")
+
+        self.remote_measure_thread = QThread(self)
+        self.remote_measure_worker = RemoteMeasureSliceWorker(time_slice=time_slice)
+        self.remote_measure_worker.moveToThread(self.remote_measure_thread)
+        self.remote_measure_thread.started.connect(self.remote_measure_worker.run)
+        self.remote_measure_worker.finished.connect(self._handle_remote_measure_finished)
+        self.remote_measure_worker.finished.connect(self.remote_measure_thread.quit)
+        self.remote_measure_thread.finished.connect(self.remote_measure_worker.deleteLater)
+        self.remote_measure_thread.finished.connect(self._cleanup_remote_measure_worker)
+        self.remote_measure_thread.start()
+
+    @Slot(int, bool, str, float)
+    def _handle_remote_measure_finished(self, time_slice: int, ok: bool, message: str, elapsed: float) -> None:
+        self.remote_measure_in_flight = False
+        if not self.is_playing:
+            return
+
+        if not ok:
+            summary = self._deploy_message_summary(message)
+            self.stop_remote_play(f"时间片 {time_slice} 测量失败：\n{summary}")
+            return
+
+        self.statusBar().showMessage(
+            f"时间片 {time_slice} 测量完成，用时 {elapsed:.2f}s，正在读取 Redis..."
+        )
+        self._query_redis_for_slice(time_slice)
+
+    @Slot()
+    def _cleanup_remote_measure_worker(self) -> None:
+        if self.remote_measure_thread is not None:
+            self.remote_measure_thread.deleteLater()
+        self.remote_measure_thread = None
+        self.remote_measure_worker = None
+
+    def _query_redis_for_slice(self, time_slice: int) -> None:
+        if not self.redis_enabled or self.redis_worker is None:
+            return
+
+        active_for_redis = self.remote_slice_active_links.get(time_slice, [])
+        if not active_for_redis or not self.calculator.satellites:
+            return
+
+        self.redis_query_seq += 1
+        self.redis_query_in_flight = True
+        self.redis_last_error = ""
+        self.redis_query_requested.emit(
+            self.redis_query_seq,
+            time_slice,
+            active_for_redis,
+            list(self.calculator.satellites),
+        )
 
     def _schedule_redis_update_if_needed(self) -> None:
+        if self.is_playing:
+            return
         if not self.redis_enabled or self.redis_worker is None:
             return
 
@@ -511,27 +681,37 @@ class MainWindow(QMainWindow):
         self.redis_last_error = ""
         self.redis_query_requested.emit(
             self.redis_query_seq,
+            -1,
             active_for_redis,
             list(self.calculator.satellites),
         )
 
-    @Slot(int, object)
-    def _apply_redis_result(self, query_id: int, redis_result: Dict[str, Dict[LinkKey, Any]]) -> None:
+    @Slot(int, int, object)
+    def _apply_redis_result(
+        self,
+        query_id: int,
+        time_slice: int,
+        redis_result: Dict[str, Dict[LinkKey, Any]],
+    ) -> None:
         if query_id != self.redis_query_seq:
             return
 
         self.redis_query_in_flight = False
         self.redis_last_error = ""
-        if isinstance(redis_result, dict) and "cal" in redis_result:
-            self.registry.apply_redis_cal(redis_result.get("cal", {}))
+        if isinstance(redis_result, dict) and "delay" in redis_result:
+            self.registry.apply_redis_delay(redis_result.get("delay", {}))
             if self.redis_config.get("loss_enabled", False):
                 self.registry.apply_redis_loss(redis_result.get("loss", {}))
         else:
-            self.registry.apply_redis_cal(redis_result)
+            self.registry.apply_redis_delay(redis_result)
         self._refresh_table()
+        if self.is_playing and time_slice >= 0:
+            self.statusBar().showMessage(
+                f"时间片 {time_slice}/{self.remote_total_slices - 1} 数据已更新"
+            )
 
-    @Slot(int, str)
-    def _handle_redis_error(self, query_id: int, message: str) -> None:
+    @Slot(int, int, str)
+    def _handle_redis_error(self, query_id: int, time_slice: int, message: str) -> None:
         if query_id != self.redis_query_seq:
             return
 
@@ -545,7 +725,11 @@ class MainWindow(QMainWindow):
             return
 
         if advance:
-            self.current_time += timedelta(seconds=self.step_size)
+            if self.is_playing and self.remote_play_epoch_time is not None:
+                elapsed = monotonic() - self.remote_play_started_at
+                self.current_time = self.remote_play_epoch_time + timedelta(seconds=elapsed)
+            else:
+                self.current_time += timedelta(seconds=self.step_size)
 
         self.calculator.propagate(self.current_time)
         sats = satellite_positions_array(self.calculator.satellites)
@@ -583,5 +767,17 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
+        self.remote_slice_timer.stop()
+        if self.remote_measure_thread is not None:
+            if self.remote_measure_worker is not None:
+                self.remote_measure_worker.cancel()
+            self.remote_measure_thread.quit()
+            self.remote_measure_thread.wait(5000)
         self.stop_redis_worker()
+        if self.deploy_worker_thread is not None:
+            if self.deploy_worker is not None:
+                self.deploy_worker.cancel()
+            self.deploy_worker_thread.quit()
+            self.deploy_worker_thread.wait(5000)
+        self.visualizer.close()
         super().closeEvent(event)
