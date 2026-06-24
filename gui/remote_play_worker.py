@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import subprocess
-import time
-from typing import Optional
 import os
 import signal
+import subprocess
+import sys
+import time
+from typing import Optional
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from .config import (
-    DEFAULT_REDIS_PASSWORD_FILE,
     DEFAULT_REMOTE_COMMAND_TIMEOUT_SEC,
     DEFAULT_REMOTE_MEASURE_SCRIPT,
     DEFAULT_REMOTE_PROBE_COUNT,
     DEFAULT_REMOTE_PROBE_PPS,
+    build_ssh_command,
+    sudo_password_from_env_or_file,
 )
 
 
@@ -28,11 +30,12 @@ class RemoteMeasureSliceWorker(QObject):
         self,
         *,
         time_slice: int,
-        ssh_host_alias: str = "satellite-simulation",
+        ssh_host_alias: Optional[str] = None,
         remote_script: str = DEFAULT_REMOTE_MEASURE_SCRIPT,
         probe_count: int = DEFAULT_REMOTE_PROBE_COUNT,
         probe_pps: float = DEFAULT_REMOTE_PROBE_PPS,
         timeout_sec: float = DEFAULT_REMOTE_COMMAND_TIMEOUT_SEC,
+        sudo_password: Optional[str] = None,
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
@@ -42,22 +45,20 @@ class RemoteMeasureSliceWorker(QObject):
         self.probe_count = int(probe_count)
         self.probe_pps = float(probe_pps)
         self.timeout_sec = float(timeout_sec)
+        self.sudo_password = sudo_password
         self._process: Optional[subprocess.Popen[str]] = None
         self._cancelled = False
 
     @Slot()
     def run(self) -> None:
         password = self._read_sudo_password()
-        command = [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            self.ssh_host_alias,
+        command = build_ssh_command(
             (
                 f"sudo -S -p '' timeout {self.timeout_sec:g}s bash {self.remote_script} "
                 f"{self.time_slice} {self.probe_count} {self.probe_pps:g}"
             ),
-        ]
+            self.ssh_host_alias,
+        )
 
         started_at = time.monotonic()
         try:
@@ -67,7 +68,7 @@ class RemoteMeasureSliceWorker(QObject):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                start_new_session=True,
+                **self._popen_process_group_kwargs(),
             )
             output, _ = self._process.communicate(
                 input=f"{password}\n" if password else "\n",
@@ -111,21 +112,33 @@ class RemoteMeasureSliceWorker(QObject):
         process = self._process
         if process is None or process.poll() is not None:
             return
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except Exception:
+        self._terminate_process(process)
+
+    def _read_sudo_password(self) -> str:
+        if self.sudo_password is not None:
+            return self.sudo_password
+        return sudo_password_from_env_or_file() or ""
+
+    def _popen_process_group_kwargs(self) -> dict:
+        if sys.platform.startswith("win"):
+            return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"start_new_session": True}
+
+    def _terminate_process(self, process: subprocess.Popen[str]) -> None:
+        if sys.platform.startswith("win"):
             process.terminate()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except Exception:
+                process.terminate()
         try:
             process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except Exception:
+            if sys.platform.startswith("win"):
                 process.kill()
-
-    def _read_sudo_password(self) -> str:
-        try:
-            with open(DEFAULT_REDIS_PASSWORD_FILE, encoding="utf-8") as password_file:
-                return password_file.read().strip()
-        except OSError:
-            return ""
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except Exception:
+                    process.kill()

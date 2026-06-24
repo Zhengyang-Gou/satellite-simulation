@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QInputDialog,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -28,6 +29,7 @@ from .config import (
     DEFAULT_REMOTE_TIME_SLICES,
     env_int,
     redis_config_from_env,
+    sudo_password_from_env_or_file,
 )
 from .deploy_worker import RemoteDeployWorker
 from .dialogs import (
@@ -80,6 +82,7 @@ class MainWindow(QMainWindow):
         self.remote_play_epoch_time: Optional[datetime] = None
         self.remote_play_started_at = 0.0
         self.remote_slice_active_links: Dict[int, Any] = {}
+        self.remote_sudo_password: Optional[str] = None
 
         if self.redis_enabled:
             self.start_redis_worker(self.redis_config)
@@ -253,13 +256,17 @@ class MainWindow(QMainWindow):
         if self.deploy_worker_thread is not None:
             return
 
+        sudo_password = self._get_remote_sudo_password()
+        if sudo_password is None:
+            return
+
         self.deploy_completed = False
         self.act_deploy.setEnabled(False)
         self.act_deploy.setText("Deploying...")
         self.statusBar().showMessage("正在远程部署，请稍候...")
 
         self.deploy_worker_thread = QThread(self)
-        self.deploy_worker = RemoteDeployWorker()
+        self.deploy_worker = RemoteDeployWorker(sudo_password=sudo_password)
         self.deploy_worker.moveToThread(self.deploy_worker_thread)
         self.deploy_worker_thread.started.connect(self.deploy_worker.run)
         self.deploy_worker.finished.connect(self._handle_deploy_finished)
@@ -297,6 +304,25 @@ class MainWindow(QMainWindow):
         if not lines:
             return ""
         return "\n".join(lines[-8:])
+
+    def _get_remote_sudo_password(self) -> Optional[str]:
+        configured_password = sudo_password_from_env_or_file()
+        if configured_password:
+            return configured_password
+        if self.remote_sudo_password:
+            return self.remote_sudo_password
+
+        password, ok = QInputDialog.getText(
+            self,
+            "远程 sudo 密码",
+            "请输入远程主机 s223 用户的 sudo 密码：",
+            QLineEdit.Password,
+        )
+        if not ok:
+            return None
+
+        self.remote_sudo_password = password
+        return password
 
     def _on_selected_links_changed(self, selected: Set[LinkKey]) -> None:
         self.selected_link_pairs = selected
@@ -512,6 +538,10 @@ class MainWindow(QMainWindow):
         if self.remote_measure_thread is not None:
             return
 
+        sudo_password = self._get_remote_sudo_password()
+        if sudo_password is None:
+            return
+
         if not self.redis_enabled:
             self.redis_config["enabled"] = True
             self.redis_enabled = True
@@ -526,6 +556,7 @@ class MainWindow(QMainWindow):
         self.remote_play_started_at = monotonic()
         self.redis_last_error = ""
         self.redis_query_in_flight = False
+        self.remote_sudo_password = sudo_password
 
         self.act_play.setText("停止")
         self.act_play.setIcon(
@@ -610,7 +641,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"远程测量时间片 {time_slice}/{self.remote_total_slices - 1}")
 
         self.remote_measure_thread = QThread(self)
-        self.remote_measure_worker = RemoteMeasureSliceWorker(time_slice=time_slice)
+        self.remote_measure_worker = RemoteMeasureSliceWorker(
+            time_slice=time_slice,
+            sudo_password=self.remote_sudo_password,
+        )
         self.remote_measure_worker.moveToThread(self.remote_measure_thread)
         self.remote_measure_thread.started.connect(self.remote_measure_worker.run)
         self.remote_measure_worker.finished.connect(self._handle_remote_measure_finished)
